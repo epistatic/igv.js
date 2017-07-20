@@ -34,8 +34,8 @@ var igv = (function (igv) {
         this.url = config.url;
 
         if (config.color === undefined) config.color = "rgb(150,150,150)";   // Hack -- should set a default color per track type
-        // if (config.graphType === undefined) config.graphType = "bar";
-        if (config.graphType === undefined) config.graphType = "points";
+        if (config.graphType === undefined) config.graphType = "bar";
+        if (config.yLines === undefined) config.yLines = [];
 
         igv.configTrack(this, config);
 
@@ -184,11 +184,6 @@ var igv = (function (igv) {
 
             featureValueRange = featureValueMaximum - featureValueMinimum;
 
-            console.log('cas', featureValueRange, featureValueMaximum, featureValueMinimum);
-
-            if (yLines  === undefined) {
-                yLines = [-40, 10, 60]
-            }
             yLines.forEach(renderYLine);
 
             if (self.config.graphType === "points") {
@@ -293,7 +288,6 @@ var igv = (function (igv) {
             igv.graphics.fillRect(ctx, x, yUnitless * pixelHeight, width, height, {fillStyle: "rgb(0,205,255)"});
 
         }
-
 
     };
 

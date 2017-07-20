@@ -248,6 +248,13 @@
         </div>
 
         <div onclick="igv.browser.loadTrack({
+                                url: 'https://data.broadinstitute.org/igvdata/t2d/recomb_decode.bedgraph',
+                                name: 'Recombination rate',
+                                graphType: 'points',
+                                yLines: [1,3]})">Recombination Rate (yLines, points)
+        </div>
+
+        <div onclick="igv.browser.loadTrack({
         url: 'https://www.encodeproject.org/files/ENCFF002ADR/@@download/ENCFF002ADR.bigBed',
         name: 'ENCFF002ADR',
         visibilityWindow: 2000000,
