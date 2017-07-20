@@ -34,6 +34,8 @@ var igv = (function (igv) {
         this.url = config.url;
 
         if (config.color === undefined) config.color = "rgb(150,150,150)";   // Hack -- should set a default color per track type
+        // if (config.graphType === undefined) config.graphType = "bar";
+        if (config.graphType === undefined) config.graphType = "points";
 
         igv.configTrack(this, config);
 
@@ -151,7 +153,8 @@ var igv = (function (igv) {
             featureValueMinimum,
             featureValueMaximum,
             featureValueRange,
-            defaultRange;
+            defaultRange
+            yLines = self.config.yLines;
 
 
         if (features && features.length > 0) {
@@ -181,11 +184,23 @@ var igv = (function (igv) {
 
             featureValueRange = featureValueMaximum - featureValueMinimum;
 
-            features.forEach(renderFeature);
+            console.log('cas', featureValueRange, featureValueMaximum, featureValueMinimum);
+
+            if (yLines  === undefined) {
+                yLines = [-40, 10, 60]
+            }
+            yLines.forEach(renderYLine);
+
+            if (self.config.graphType === "points") {
+                features.forEach(renderFeatureAsPoints);
+            }
+            else {
+                features.forEach(renderFeatureAsBar);
+            }
+
         }
 
-
-        function renderFeature(feature, index, featureList) {
+        function renderFeatureAsBar(feature, index, featureList) {
 
             var yUnitless,
                 heightUnitLess,
@@ -231,6 +246,54 @@ var igv = (function (igv) {
             igv.graphics.fillRect(ctx, x, yUnitless * pixelHeight, width, heightUnitLess * pixelHeight, {fillStyle: self.color});
 
         }
+
+        function renderFeatureAsPoints(feature, index, featureList) {
+
+            var yUnitless,
+                x,
+                y,
+                width,
+                height,
+                rectEnd,
+                rectBaseline;
+
+            if (feature.end < bpStart) return;
+            if (feature.start > bpEnd) return;
+
+            x = Math.floor((feature.start - bpStart) / bpPerPixel);
+            rectEnd = Math.ceil((feature.end - bpStart) / bpPerPixel);
+            width = Math.max(1, rectEnd - x);
+            height = 2
+
+            yUnitless = 1 - (feature.value - featureValueMinimum) / featureValueRange
+
+            igv.graphics.fillRect(ctx, x, yUnitless * pixelHeight, width, height, {fillStyle: self.color});
+
+        }
+
+        function renderYLine(yLine, index, yLineList) {
+
+            var yUnitless,
+                x,
+                width,
+                height,
+                rectEnd,
+                rectBaseline;
+
+            if (yLine < bpStart) featureValueMinimum;
+            if (yLine > bpEnd) featureValueMaximum;
+
+            x = 0;
+            rectEnd = Math.ceil(bpEnd / bpPerPixel);
+            width = Math.max(1, rectEnd);
+            height = 1
+
+            yUnitless = 1 - (yLine - featureValueMinimum) / featureValueRange
+
+            igv.graphics.fillRect(ctx, x, yUnitless * pixelHeight, width, height, {fillStyle: "rgb(0,205,255)"});
+
+        }
+
 
     };
 
