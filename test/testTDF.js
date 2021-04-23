@@ -1,225 +1,122 @@
-function runTDFTests() {
+import "./utils/mockObjects.js"
+import TDFReader from "../js/tdf/tdfReader.js";
+import TDFSource from "../js/tdf/tdfSource.js";
+import FeatureSource from "../js/feature/featureSource.js"
+import {assert} from 'chai';
+import {genome} from "./utils/Genome.js";
 
-    var dataURL = "https://data.broadinstitute.org/igvdata/test/data/";
+suite("testTDF", function () {
 
-    function createMockObjects() {
+    const dataURL = "https://data.broadinstitute.org/igvdata/test/data/";
 
-        igv.browser = {
-            genome: {
-                getChromosome: function (name) {
-                    return {bpLength: 51304566};
-                },
-                getChromosomeName: function (chr) {
-                    return chr.startsWith("chr") ? chr : "chr" + chr;
-                }
-            }
-        }
-    }
+    test("TDF source get features (zoom)", async function () {
+        this.timeout(10000);
+        const url = dataURL + "tdf/gstt1_sample.bam.tdf",
+            chr = "22",
+            start = 24049020,
+            end = 24375399,
+            bpPerPixel = 51304566 / (Math.pow(2, 6) * 700);
 
-    function reject(error) {
-        console.log(error);
-        ok(false);
-    }
-
-    asyncTest("TDF header", function () {
-
-        var url = dataURL + "tdf/gstt1_sample.bam.tdf",
-            tdfReader;
-
-        createMockObjects();
-
-        tdfReader = new igv.TDFReader({url: url});
-        ok(tdfReader);
-
-        tdfReader.readHeader().then(function () {
-
-            equal(4, tdfReader.version);
-            equal(true, tdfReader.compressed);
-            equal(10, _.size(tdfReader.datasetIndex));
-
-            start();
+        const tdfSource = FeatureSource({format: 'tdf', url: url}, genome);
+        const features = await tdfSource.getFeatures({chr, start, end, bpPerPixel});
+        assert.ok(features);
+    })
 
 
-        }).catch(reject);
-    });
+    test("TDF header", async function () {
+        this.timeout(10000);
+        const url = dataURL + "tdf/gstt1_sample.bam.tdf";
+        const tdfReader = new TDFReader({url: url}, genome);
+        await tdfReader.readHeader();
+        assert.equal(4, tdfReader.version);
+        assert.equal(true, tdfReader.compressed);
+        assert.equal(10, Object.keys(tdfReader.datasetIndex).length);
+    })
 
 
-    asyncTest("TDF dataset", function () {
+    test("TDF dataset", async function () {
+        this.timeout(10000);
+        const url = dataURL + "tdf/gstt1_sample.bam.tdf";
+        const tdfReader = new TDFReader({url: url}, genome);
+        const dataset = await tdfReader.readDataset("chr22", "mean", 6);
+        assert.ok(dataset);
+        assert.equal("FLOAT", dataset.dataType);
+        assert.equal(801634, dataset.tileWidth);
+        assert.equal(64, dataset.tiles.length);
+        assert.equal(1364, dataset.tiles[30].position);
+        assert.equal(43, dataset.tiles[30].size);
 
-        var url = dataURL + "tdf/gstt1_sample.bam.tdf",
-            tdfReader;
-
-        createMockObjects();
-
-        tdfReader = new igv.TDFReader({url: url});
-        ok(tdfReader);
-
-        tdfReader.readDataset("chr22", "mean", 6).then(function (dataset) {
-
-            ok(dataset);
-
-            equal("FLOAT", dataset.dataType);
-            equal(801634, dataset.tileWidth);
-            equal(64, dataset.tiles.length);
-            equal(1364, dataset.tiles[30].position);
-            equal(43, dataset.tiles[30].size);
-            start();
-
-        }).catch(reject);
-    });
+    })
 
 
-    asyncTest("TDF root group", function () {
-
-        var url = dataURL + "tdf/gstt1_sample.bam.tdf",
-            tdfReader;
-
-        createMockObjects();
-
-        tdfReader = new igv.TDFReader({url: url});
-        ok(tdfReader);
-
-        tdfReader.readGroup("/").then(function (group) {
-
-            ok(group);
-            equal("321.74997", group["Mean"]);
-            equal("hg19", group["genome"]);
-            equal("7", group["maxZoom"]);
-
-            start();
-
-        }).catch(reject);
-    });
+    test("TDF root group", async function () {
+        this.timeout(10000);
+        const url = dataURL + "tdf/gstt1_sample.bam.tdf";
+        const tdfReader = new TDFReader({url: url}, genome);
+        const group = await tdfReader.readGroup("/");
+        assert.equal("321.74997", group["Mean"]);
+        assert.equal("hg19", group["genome"]);
+        assert.equal("7", group["maxZoom"]);
+    })
 
 
-    asyncTest("TDF variable step tile", function () {
-
-        var url = dataURL + "tdf/gstt1_sample.bam.tdf",
-            tdfReader;
-
-        createMockObjects();
-
-        tdfReader = new igv.TDFReader({url: url});
-        ok(tdfReader);
-
-        tdfReader.readDataset("chr22", "mean", 6).then(function (dataset) {
-
-            ok(dataset);
-
-            var tileNumber = 30;
-            var nTracks = 1;
-
-            tdfReader.readTile(dataset.tiles[tileNumber], nTracks).then(function (tile) {
-                equal("variableStep", tile.type);
-                equal(24049020, tile.tileStart);
-                equal(24375399, tile.start[0]);
-                equal(321.75, tile.data[0][0]);
-
-                start();
-
-            }).catch(reject);
-        }).catch(reject);
-    });
+    test("TDF variable step tile", async function () {
+        this.timeout(20000);
+        const url = dataURL + "tdf/gstt1_sample.bam.tdf";
+        const tdfReader = new TDFReader({url: url}, genome);
+        const dataset = await tdfReader.readDataset("chr22", "mean", 6);
+        var tileNumber = 30;
+        var nTracks = 1;
+        const tiles = await tdfReader.readTiles(dataset.tiles.slice(tileNumber, tileNumber + 1), nTracks);
+        const tile = tiles[0]
+        assert.equal("variableStep", tile.type);
+        assert.equal(24049020, tile.tileStart);
+        assert.equal(24375399, tile.start[0]);
+        assert.equal(321.75, tile.data[0][0]);
+    })
 
 
-    asyncTest("TDF bed tile", function () {
-
-        var url = dataURL + "tdf/gstt1_sample.bam.tdf",
-            tdfReader;
-
-        createMockObjects();
-
-        tdfReader = new igv.TDFReader({url: url});
-        ok(tdfReader);
-
-        tdfReader.readDataset("chr22", "raw").then(function (dataset) {
-
-            ok(dataset);
-
-            var tileNumber = 243;
-            var nTracks = 1;
-
-            tdfReader.readTile(dataset.tiles[tileNumber], nTracks).then(function (tile) {
-                ok(tile);
-                equal("bed", tile.type);
-                equal(24376175, tile.start[0]);
-                equal(24376200, tile.end[0]);
-                equal(5.28000020980835, tile.data[0][0]);
-                start();
-
-            }).catch(reject);
-        }).catch(reject);
-    });
+    test("TDF bed tile", async function () {
+        this.timeout(20000);
+        const url = dataURL + "tdf/gstt1_sample.bam.tdf";
+        const tdfReader = new TDFReader({url: url}, genome);
+        const dataset = await tdfReader.readDataset("chr22", "raw");
+        assert.ok(dataset);
+        var tileNumber = 243;
+        var nTracks = 1;
+        const tiles = await tdfReader.readTiles(dataset.tiles.slice(tileNumber, tileNumber + 1), nTracks);
+        const tile = tiles[0];
+        assert.equal("bed", tile.type);
+        assert.equal(24376175, tile.start[0]);
+        assert.equal(24376200, tile.end[0]);
+        assert.equal(5.28000020980835, tile.data[0][0]);
+    })
 
 
     // TODO -- NEED FIXED STEP TILE TEST
 
 
-    asyncTest("TDF root group", function () {
-
-        var url = dataURL + "tdf/gstt1_sample.bam.tdf",
-            tdfReader;
-
-        createMockObjects();
-
-        tdfReader = new igv.TDFReader({url: url});
-        ok(tdfReader);
-
-        tdfReader.readRootGroup().then(function (group) {
-
-            ok(group);
-            ok(tdfReader.chrNameMap);
-            equal(7, tdfReader.maxZoom);
-
-            start();
-
-        }).catch(reject);
-    });
+    test("TDF root group", async function () {
+        this.timeout(10000);
+        const url = dataURL + "tdf/gstt1_sample.bam.tdf";
+        const tdfReader = new TDFReader({url: url}, genome);
+        const group = await tdfReader.readRootGroup();
+        assert.ok(group);
+        assert.ok(tdfReader.chrAliasTable);
+        assert.equal(7, tdfReader.maxZoom);
+    })
 
 
-    asyncTest("TDF source get features (raw)", function () {
-
-        var url = dataURL + "tdf/gstt1_sample.bam.tdf",
-            tdfSource,
-            chr = "chr22",
-            bpstart = 24376175,
+    test("TDF source get features (raw)", async function () {
+        this.timeout(10000);
+        const url = dataURL + "tdf/gstt1_sample.bam.tdf",
+            chr = "22",
+            start = 24376175,
             end = 24376200,
             bpPerPixel = 1;
+        const tdfSource = new TDFSource({url: url}, genome);
+        const features = await tdfSource.getFeatures({chr, start, end, bpPerPixel});
+        assert.ok(features);
 
-        createMockObjects();
-
-        tdfSource = new igv.TDFSource({url: url});
-
-        tdfSource.getFeatures(chr, bpstart, end, bpPerPixel).then(function (features) {
-
-            ok(features);
-
-            start();
-
-        }).catch(reject);
-    });
-
-
-    asyncTest("TDF source get features (zoom)", function () {
-
-        var url = dataURL + "tdf/gstt1_sample.bam.tdf",
-            tdfSource,
-            chr = "chr22",
-            bpstart = 24049020,
-            end = 24375399,
-            bpPerPixel = 51304566 / (Math.pow(2, 6) *700);
-
-        createMockObjects();
-
-        tdfSource = new igv.TDFSource({url: url});
-
-        tdfSource.getFeatures(chr, bpstart, end, bpPerPixel).then(function (features) {
-
-            ok(features);
-
-            start();
-
-        }).catch(reject);
-    });
-
-}
+    })
+})

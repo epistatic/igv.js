@@ -24,81 +24,128 @@
  * THE SOFTWARE.
  */
 
-/**
- * Created by dat on 9/1/16.
- */
-var igv = (function (igv) {
+import $ from "../vendor/jquery-3.3.1.slim.js";
 
-    igv.CenterGuide = function ($parent, config) {
-        var self = this;
+class CenterGuide {
+
+    constructor($guideParent, $controlParent, config, browser) {
+
+        const self = this;
+
+        this.browser = browser;
 
         this.$container = $('<div class="igv-center-guide igv-center-guide-thin">');
-        $parent.append(this.$container);
 
-        if (true === config.showCenterGuide) {
-            this.$container.show();
-        } else {
+        $guideParent.append(this.$container);
+
+        if (true === config.showCenterGuideButton) {
+
+            this.$centerGuideToggle = $('<div class="igv-navbar-button">');
+            $controlParent.append(this.$centerGuideToggle);
+            this.$centerGuideToggle.text('center line');
+
+            this.$centerGuideToggle.on('click', function () {
+                if (true === browser.isCenterGuideVisible) {
+                    self.doHide();
+                } else {
+                    self.doShow();
+                }
+            });
+
+        }
+    }
+
+
+    doHide() {
+        if (this.$centerGuideToggle) {
+            this.$centerGuideToggle.removeClass('igv-navbar-button-clicked');
+        }
+        this.browser.hideCenterGuide();
+    };
+
+    doShow() {
+
+        if (this.$centerGuideToggle) {
+            this.$centerGuideToggle.addClass('igv-navbar-button-clicked');
+        }
+
+        this.browser.showCenterGuide();
+    };
+
+    setState(isCenterGuideVisible) {
+
+        if (this.$centerGuideToggle) {
+
+            if (true === isCenterGuideVisible) {
+                this.$centerGuideToggle.addClass('igv-navbar-button-clicked');
+            } else {
+                this.$centerGuideToggle.removeClass('igv-navbar-button-clicked');
+            }
+
+        }
+
+    };
+
+    forcedHide() {
+
+        if (this.$centerGuideToggle) {
+            this.$centerGuideToggle.hide();
+        }
+
+        if (true === this.browser.isCenterGuideVisible) {
             this.$container.hide();
         }
 
-        this.$centerGuideToggle = igv.makeToggleButton('center line', 'center line', 'showCenterGuide', function () {
-            return self.$container;
-        }, function () {
-            self.repaint();
-        });
-
     };
 
+    forcedShow() {
 
-    igv.CenterGuide.prototype.repaint = function () {
-
-        var ppb,
-            trackXY,
-            trackHalfWidth,
-            width,
-            left,
-            ls,
-            ws,
-            center,
-            rect,
-            referenceFrame;
-
-        if (undefined === igv.browser.genomicStateList) {
-            return;
+        if (this.$centerGuideToggle) {
+            this.$centerGuideToggle.show();
         }
 
-        referenceFrame = igv.browser.genomicStateList[ 0 ].referenceFrame;
-        ppb = 1.0/referenceFrame.bpPerPixel;
-        if (ppb > 1) {
-
-            rect = igv.browser.syntheticViewportContainerBBox();
-            trackXY = rect.position;
-            trackHalfWidth = 0.5 * rect.width;
-
-            center = trackXY.left + trackHalfWidth;
-            width = referenceFrame.toPixels(1);
-            left = center - 0.5 * width;
-
-            ls = Math.round(left).toString() + 'px';
-            ws = Math.round(width).toString() + 'px';
-            this.$container.css({ left:ls, width:ws });
-
-            this.$container.removeClass('igv-center-guide-thin');
-            this.$container.addClass('igv-center-guide-wide');
-        } else {
-
-            this.$container.css({ left:'50%', width:'1px' });
-
-            this.$container.removeClass('igv-center-guide-wide');
-            this.$container.addClass('igv-center-guide-thin');
+        if (true === this.browser.isCenterGuideVisible) {
+            this.$container.show();
         }
 
     };
 
-    igv.CenterGuide.prototype.resize = function () {
+    repaint() {
+
+
+        if (this.browser.referenceFrameList) {
+
+            const referenceFrame = this.browser.referenceFrameList[0]
+            const ppb = 1.0 / referenceFrame.bpPerPixel;
+
+            if (ppb > 1) {
+
+                const xy = this.browser.trackViews[0].$viewportContainer.position();
+                const halfWidth = Math.round(this.browser.trackViews[0].$viewportContainer.width() / 2);
+
+                const center = xy.left + halfWidth;
+                const width = referenceFrame.toPixels(1);
+                const left = center - 0.5 * width;
+
+                const ls = Math.round(left).toString() + 'px';
+                const ws = Math.round(width).toString() + 'px';
+                this.$container.css({left: ls, width: ws});
+
+                this.$container.removeClass('igv-center-guide-thin');
+                this.$container.addClass('igv-center-guide-wide');
+            } else {
+
+                this.$container.css({left: '50%', width: '1px'});
+                this.$container.removeClass('igv-center-guide-wide');
+                this.$container.addClass('igv-center-guide-thin');
+            }
+
+        }
+    }
+
+    resize() {
         this.repaint();
-    };
+    }
+}
 
-    return igv;
-
-}) (igv || {});
+export default CenterGuide;

@@ -1,43 +1,46 @@
-function runGFFTests() {
+import "./utils/mockObjects.js"
+import FeatureSource from "../js/feature/featureSource.js";
+import {assert} from 'chai';
+import {genome} from "./utils/Genome.js";
 
-    // mock object
-    if (igv === undefined) {
-        igv = {};
-    }
+suite("testGFF", function () {
 
-    igv.browser = {
-        getFormat: function () {
-        },
+    test("GFF query", async function () {
 
-        genome: {
-            getChromosome: function (chr) {
+        const chr = "chr1";
+        const start = 1;
+        const end = 10000;
+        const featureSource = FeatureSource({
+                url: require.resolve('./data/gff/eden.gff'),
+                format: 'gff3',
+                filterTypes: []
             },
-            getChromosomeName: function (chr) {
-                return chr
-            }
-        }
-    };
+            genome);
 
-    asyncTest("GFF query", function () {
+        const features = await featureSource.getFeatures({chr, start, end});
+        assert.ok(features);
+        assert.equal(4, features.length);
+        assert.equal(chr, features[0].chr); // ensure features chromosome is specified chromosome
 
-        var chr = "chr1",
-            bpStart = 1,
-            bpEnd   = 10000,
-            featureSource = new igv.FeatureSource({
-                url: 'data/gff/eden.gff',
+    })
+
+    test("Multiline feature", async function () {
+
+        const featureSource = FeatureSource({
+                url: require.resolve('./data/gff/multi_line_feature.gff3'),
                 format: 'gff3'
-            });
+            },
+            genome);
 
-        featureSource.getFeatures(chr, bpStart, bpEnd).then(function (features) {
+        const chr1Features = await featureSource.getFeatures({chr: "chr1", start: 500000, end: 600000});
+        assert.ok(chr1Features);
+        assert.equal(1, chr1Features.length);
+        assert.equal(5, chr1Features[0].exons.length); // ensure features chromosome is specified chromosome
 
-            ok(features);
-            equal(3, features.length);
-            equal(chr, features[0].chr); // ensure features chromosome is specified chromosome
+        const chr2Features = await featureSource.getFeatures({chr: "chr2", start: 500000, end: 600000});
+        assert.ok(chr2Features);
+        assert.equal(1, chr2Features.length);
+        assert.equal(5, chr2Features[0].exons.length); // ensure features chromosome is specified chromosome
 
-            start();
-        }).catch(function (error) {
-            console.log(error);
-            ok(false);
-        });
-    });
-}
+    })
+})

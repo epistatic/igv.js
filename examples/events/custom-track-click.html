@@ -8,116 +8,102 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="">
     <meta name="author" content="">
-    <link rel="shortcut icon" href="//igv.org/web/img/favicon.ico">
-    <title>Integrative Genomics Viewer</title>
+    <link rel="shortcut icon" href="https://igv.org/web/img/favicon.ico">
+    <title>IGV - Custom Track Click</title>
 
-    <!-- Bootstrap CSS - NOT REQUIRED FOR IGV -->
-    <link rel="stylesheet" type="text/css" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css">
+    <!-- Bootstrap 4 - CSS -->
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css"
+          integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
 
-    <!-- jQuery UI CSS -->
-    <link rel="stylesheet" type="text/css"
-          href="//ajax.googleapis.com/ajax/libs/jqueryui/1.11.2/themes/smoothness/jquery-ui.css"/>
+    <!-- Examples CSS -->
+    <link rel="stylesheet" href="../css/custom-track-click.css">
 
-    <!-- Font Awesome CSS -->
-    <link rel="stylesheet" type="text/css" href="//maxcdn.bootstrapcdn.com/font-awesome/4.2.0/css/font-awesome.min.css">
+    <!-- Bootstrap 4 Dependancies - jQuery | Popper -->
+    <script src="https://code.jquery.com/jquery-3.2.1.slim.min.js"
+            integrity="sha384-KJ3o2DKtIkvYIK3UENzmM7KCkRr/rE9/Qpg6aAZGJwFDMVNA/GpGFF93hXpG5KkN"
+            crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js"
+            integrity="sha384-ApNbgh9B+Y1QKtv3Rn7W3mgPxhU9K/ScQsAP7hUibX39j7fakFPskvXusvfa0b4Q"
+            crossorigin="anonymous"></script>
 
-    <!-- IGV CSS -->
-    <link rel="stylesheet" type="text/css" href="//igv.org/web/test/multilocus/igv-multilocus.css">
-
-    <!-- jQuery JS -->
-    <script type="text/javascript" src="//ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
-    <script type="text/javascript" src="//ajax.googleapis.com/ajax/libs/jqueryui/1.11.2/jquery-ui.min.js"></script>
-
-    <!-- Bootstrap JS -  NOT REQUIRED FOR IGV -->
-    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/js/bootstrap.min.js"></script>
+    <!-- Bootstrap 4 - JS -->
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/js/bootstrap.min.js"
+            integrity="sha384-JZR6Spejh4U02d8jOt6vLEHfe/JQGiRRSQQxSfFWpi1MquVdAyjUar5+76PVCmYl"
+            crossorigin="anonymous"></script>
 
     <!-- IGV JS-->
-    <script type="text/javascript" src="//igv.org/web/test/multilocus/igv-multilocus.js"></script>
+    <script src="../../dist/igv.min.js"></script>
 
 </head>
 
-<body role="document">
+<body>
 
-<div class="jumbotron">
-    <div class="container">
+<main role="main" class="container">
+
+    <div class="igv-custom-track-click-container">
         <h2>IGV.js <code>trackclick</code> Event Example 2</h2>
-        <p>In this example we show how to use the <code>trackclick</code> event to disable the default pop-over. Instead
-            we're going to use it as a hook to implement custom click behavior.
-        </p>
+        <p class="lead">In this example we show how to use the <code>trackclick</code> event to disable the default
+            pop-over. Instead
+            we're going to use it as a hook to implement custom click behavior.</p>
+
         <h3>Try it out:</h3>
+
         <ol>
             <li>Click on any features on the gene track.</li>
             <li>Notice the genes you've clicked get added to the list on the right.</li>
         </ol>
-    </div>
-</div>
 
-<div class="container-fluid">
+    </div>
+
     <div class="row">
-        <div class="col-sm-9" id="igvDiv"></div>
-        <div class="col-sm-3 bg-info" style="min-height: 500px;">
+        <div id="igv-custom-track-click" class="col-sm-9"></div>
+        <div id="igv-custom-track-click-selected-genes" class="col-sm-3">
             <h4>Selected Genes</h4>
             <ul id="geneList">
 
             </ul>
         </div>
     </div>
-</div>
-<!-- container -->
 
-<div class="container-fluid">
-
-    <footer>
-        <p></p>
-    </footer>
-
-</div>
-<!-- container -->
+</main>
 
 <script type="text/javascript">
 
     $(document).ready(function () {
 
-        var div = $("#igvDiv")[0],
-                options = {
-                    showNavigation: true,
-                    locus: "chr1:155,160,475-155,184,282",
-                    reference: {
-                        id: "hg19"
-                    },
-                    tracks: [
-                        {
-                            name: "Genes",
-                            url: "https://s3.amazonaws.com/igv.broadinstitute.org/annotations/hg19/genes/gencode.v18.collapsed.bed",
-                            indexURL: "https://s3.amazonaws.com/igv.broadinstitute.org/annotations/hg19/genes/gencode.v18.collapsed.bed.idx",
-                            order: Number.MAX_VALUE,
-                            displayMode: "EXPANDED"
+       var options =
+        {
+            showNavigation: true,
+            locus: "chr1:155,160,475-155,184,282",
+            genome: "hg19",
 
+        };
+
+        var igv_custom_track_click = $('#igv-custom-track-click');
+
+        igv.createBrowser(igv_custom_track_click.get(0), options)
+
+                .then(function (browser) {
+
+                    var genesInList = {};
+
+                    browser.on('trackclick', function (track, popoverData) {
+                        var symbol = null;
+                        popoverData.forEach(function (nameValue) {
+                            if (nameValue.name && nameValue.name.toLowerCase() === 'name') {
+                                symbol = nameValue.value;
+                            }
+                        });
+
+                        if (symbol && !genesInList[symbol]) {
+                            genesInList[symbol] = true;
+                            $("#geneList").append('<li><a href="https://uswest.ensembl.org/Multi/Search/Results?q=' + symbol + '">' + symbol + '</a></li>');
                         }
-                    ]
-                };
 
-        var myIgvBrowser = igv.createBrowser(div, options);
-
-        var genesInList = {};
-
-        myIgvBrowser.on('trackclick', function (track, popoverData) {
-            var symbol = null;
-            popoverData.forEach(function (nameValue) {
-                if (nameValue.name && nameValue.name === 'Name') {
-                    symbol = nameValue.value;
-                }
-            });
-
-            if (symbol && !genesInList[symbol]) {
-                genesInList[symbol] = true;
-                $("#geneList").append('<li><a href="http://uswest.ensembl.org/Multi/Search/Results?q=' + symbol+ '">' + symbol + '</a></li>');
-            }
-
-            // Prevent default pop-over behavior
-            return false;
-        });
-
+                        // Prevent default pop-over behavior
+                        return false;
+                    });
+                });
     });
 
 </script>

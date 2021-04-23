@@ -1,193 +1,145 @@
-function runBigwigTests() {
+import "./utils/mockObjects.js"
+import BWSource from "../js/bigwig/bwSource.js";
+import BWReader from "../js/bigwig/bwReader.js";
+import FeatureSource from "../js/feature/featureSource.js"
+import {assert} from 'chai';
 
-    var dataURL = "https://data.broadinstitute.org/igvdata/test/data/"
+suite("testBigWig", function () {
 
-    function createMockObjects(bpPerPixel) {
+    const dataURL = "https://data.broadinstitute.org/igvdata/test/data/"
 
-        igv = igv || {};
-        igv.browser = igv.browser || {};
-        igv.browser.referenceFrame = {bpPerPixel: bpPerPixel};
+    test("No data", async function () {
 
-    }
+        this.timeout(10000);
+        const bw = FeatureSource (
+            {
+                format: 'bigwig',
+                url: dataURL + 'bigwig/manyChromosomes.bigWig'}
+        );
+        const features = await bw.getFeatures({chr: 'NoSuchChromosome', start: 0, end: 100});
+        assert.equal(0, features.length);
 
-    asyncTest("Many chromosomes", function () {
+    });
 
-        var bw = new igv.BWSource(
+    test("Many chromosomes", async function () {
+
+        this.timeout(20000);
+        const bw = new BWSource(
             {url: dataURL + 'bigwig/manyChromosomes.bigWig'}
         );
 
-        bw.getFeatures('AluJb', 0, 100)
-            .then(function (features) {
-                equal(99, features.length);
-                features.forEach(function (f) {
-                    equal("AluJb", f.chr);
-                });
+        const features = await bw.getFeatures({chr: 'AluJb', start: 0, end: 100});
+        assert.equal(99, features.length);
+        features.forEach(function (f) {
+            assert.equal("AluJb", f.chr);
 
-                start();
-            })
-
-            .catch(function (error) {
-                console.log(Error('query bigWig error: ') + error);
-                ok(false);
-            });
-    });
+        })
+    })
 
 
+    test("Bigwig meta data", async function () {
 
-    asyncTest("Bigwig meta data", function () {
+        this.timeout(10000);
 
-        var url = dataURL + "bigwig/bigWigExample.bw",
-            bwReader;
+        const url = dataURL + "bigwig/bigWigExample.bw";
+        const bwReader = new BWReader({url: url});
 
-        createMockObjects();
+        const header = await bwReader.loadHeader();
 
-        bwReader = new igv.BWReader({url: url});
-        ok(bwReader);
+        assert.ok(header);
 
-        bwReader.loadHeader().then(function () {
+        assert.equal(4, header.bwVersion);
+        assert.equal(10, header.nZoomLevels);
+        assert.equal(344, header.chromTreeOffset);
+        assert.equal(393, header.fullDataOffset);
+        assert.equal(15751049, header.fullIndexOffset);
 
-            var header = bwReader.header;
-
-            ok(header);
-
-            equal(4, header.bwVersion);
-            equal(10, header.nZoomLevels);
-            equal(344, header.chromTreeOffset);
-            equal(393, header.fullDataOffset);
-            equal(15751049, header.fullIndexOffset);
-
-            // Summary data
-            equal(35106705, bwReader.totalSummary.basesCovered);
-            equal(0, bwReader.totalSummary.minVal);
-            equal(100, bwReader.totalSummary.maxVal);
-            equal(77043134252.78125, bwReader.totalSummary.sumSquares);
+        // Summary data
+        assert.equal(35106705, bwReader.totalSummary.basesCovered);
+        assert.equal(0, bwReader.totalSummary.minVal);
+        assert.equal(100, bwReader.totalSummary.maxVal);
+        assert.equal(77043134252.78125, bwReader.totalSummary.sumSquares);
 
 //            // chrom tree -- values taken from IGV java
-            var ctHeader = bwReader.chromTree.header;
-            equal(1, ctHeader.blockSize);
-            equal(5, ctHeader.keySize);
-            equal(8, ctHeader.valSize);
-            equal(1, ctHeader.itemCount);
+        var ctHeader = bwReader.chromTree.header;
+        assert.equal(1, ctHeader.blockSize);
+        assert.equal(5, ctHeader.keySize);
+        assert.equal(8, ctHeader.valSize);
+        assert.equal(1, ctHeader.itemCount);
 
-            // chrom lookup  == there's only 1 chromosome in this test file
-            var chrName = "chr21";
-            var chrIdx = bwReader.chromTree.dictionary[chrName];
-            equal(0, chrIdx);
+        // chrom lookup  == there's only 1 chromosome in this test file
+        var chrName = "chr21";
+        var chrIdx = bwReader.chromTree.chromToID[chrName];
+        assert.equal(0, chrIdx);
 
 
-            // Total data count -- note this is the # of "sections", not the # of data points.  Verified with grep
-            equal(6857, bwReader.dataCount);
+        // Total data count -- note this is the # of "sections", not the # of data points.  Verified with grep
+        assert.equal(6857, bwReader.header.dataCount);
 
-            var type = bwReader.type;
-            equal("BigWig", type);
+        var type = bwReader.type;
+        assert.equal("bigwig", type);
 
-            start();
-        }).catch(function (error) {
-            console.log(error);
-            ok(false);
+    });
+
+    test("R+ Tree", async function () {
+
+        this.timeout(10000);
+        const url = dataURL + "bigwig/bigWigExample.bw";
+        const bwReader = new BWReader({url: url});
+        const header = await bwReader.loadHeader();
+        const offset = header.fullIndexOffset;
+        bwReader.loadRPTree(offset).then(function (rpTree) {
+            assert.ok(rpTree.rootNode);
         });
     });
 
-    asyncTest("R+ Tree", function () {
+    test("Wig features", async function () {
 
-        createMockObjects();
+        this.timeout(20000);
+        //chr21:19,146,376-19,193,466
+        const url = dataURL + "bigwig/bigWigExample.bw",
+            chr = "chr21",
+            start = 19168957,
+            end = 19170640;
 
-        var url = dataURL + "bigwig/bigWigExample.bw",
-            bwReader = new igv.BWReader({url: url});
-
-        bwReader.loadHeader().then(function () {
-
-            var offset = bwReader.header.fullIndexOffset;
-
-            bwReader.loadRPTree(offset).then(function (rpTree) {
-
-                ok(rpTree.rootNode);
-
-                start();
-            });
-        }).catch(function (error) {
-            console.log(error);
-            ok(false);
-        });
+        const bWSource = new BWSource({url: url});
+        const features = await bWSource.getFeatures({chr: chr, start: start, end: end});
+        assert.ok(features);
+        assert.equal(features.length, 337);   // Verified in iPad app
     });
 
-    asyncTest("Wig features", function () {
+    test("Uncompressed bigwig", async function () {
+
+        this.timeout(10000);
 
         //chr21:19,146,376-19,193,466
-        var url = dataURL + "bigwig/bigWigExample.bw",
+        const url = "https://s3.amazonaws.com/igv.org.test/data/uncompressed.bw",
             chr = "chr21",
-            bpStart = 19168957,
-            bpEnd = 19170640,
-            bpPerPixel = 0.5478515625;    // To match iOS unit test
+            start = 0,
+            end = Number.MAX_SAFE_INTEGER,
+            bpPerPixel = 6191354.824;    // To match iOS unit test
 
-        createMockObjects(bpPerPixel);
+        const bwReader = new BWReader({url: url});
+        const features = await bwReader.readFeatures(chr, start, chr, end, bpPerPixel);
+        assert.equal(features.length, 8);   // Verified in iPad app
 
-        var bWSource = new igv.BWSource({url: url});
-
-        bWSource.getFeatures(chr, bpStart, bpEnd).then(function (features) {
-
-            ok(features);
-
-            equal(features.length, 337);   // Verified in iPad app
-
-            start();
-        }).catch(function (error) {
-            console.log(error);
-            ok(false);
-        });
     });
 
-    asyncTest("Zoom data", function () {
+    test("Zoom data", async function () {
+
+        this.timeout(10000);
 
         //chr21:19,146,376-19,193,466
-        var url = dataURL + "bigwig/bigWigExample.bw",
+        const url = dataURL + "bigwig/bigWigExample.bw",
             chr = "chr21",
-            bpStart = 18728264,
-            bpEnd = 26996291,
+            start = 18728264,
+            end = 26996291,
             bpPerPixel = 10765.6611328125;    // To match iOS unit test
+        const bWSource = new BWSource({url: url});
+        const features = await bWSource.getFeatures({chr, start, end, bpPerPixel});
+        assert.ok(features);
+        assert.equal(features.length, 1293);   // Verified in iPad app
 
-        createMockObjects(bpPerPixel);
+    })
 
-        var bWSource = new igv.BWSource({url: url});
-
-        bWSource.getFeatures(chr, bpStart, bpEnd, bpPerPixel).then(function (features) {
-
-            ok(features);
-
-            equal(features.length, 324);   // Verified in iPad app
-
-            start();
-        }).catch(function (error) {
-            console.log(error);
-            ok(false);
-        })
-    });
-
-    asyncTest("Bed features", function () {
-
-        //chr21:19,146,376-19,193,466
-        var url = dataURL + "bigwig/bigBedExample.bb",
-            chr = "chr21",
-            bpStart = 33031597,
-            bpEnd = 33041570,
-            bpPerPixel = 0.5;
-
-        createMockObjects(bpPerPixel);
-
-        var bWSource = new igv.BWSource({url: url});
-
-        bWSource.getFeatures(chr, bpStart, bpEnd, bpPerPixel).then(function (features) {
-
-            ok(features);
-
-            equal(features.length, 23);   // Verified in iPad app
-
-            start();
-        }).catch(function (error) {
-            console.log(error);
-            ok(false);
-        });
-    });
-
-
-}
+})

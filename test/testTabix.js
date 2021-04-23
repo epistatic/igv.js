@@ -1,64 +1,93 @@
-function runTabixTests() {
+import "./utils/mockObjects.js"
+import {loadIndex} from "../js/bam/indexFactory.js";
+import FeatureFileReader from "../js/feature/featureFileReader.js";
+import {assert} from 'chai';
 
-    var dataURL = "https://data.broadinstitute.org/igvdata/test/data/"
+suite("testTabix", function () {
 
+    test("TBI index", async function () {
 
-    asyncTest("blocksForRange", function () {
-
-        var refID = 14,
-            beg = 24375199,
-            end = 24378544,
-            indexPath = dataURL + "tabix/TSVC.vcf.gz.tbi",
+        const refID = 26,
+            beg = 55369194,
+            end = 55369443,
+            indexPath = require.resolve("./data/tabix/refGene.hg19.bed.gz.tbi"),
             config = {};
 
-        igv.loadBamIndex(indexPath, config, true).then(function (bamIndex) {
+        const tbiIndex = await loadIndex(indexPath, config);
+        assert.ok(tbiIndex);
 
-            ok(bamIndex);
-            start();
-        }).catch(function (error) {
-            ok(false);
-            console.log(error);
+        const blocks = tbiIndex.blocksForRange(refID, beg, end);
+        assert.equal(blocks.length, 1)
+        assert.equal(1640062, blocks[0].minv.block)
+
+    })
+
+
+    test("CSI index", async function () {
+
+        const refID = 0,
+            beg = 1226000,
+            end = 1227000,
+            indexPath = require.resolve("./data/tabix/csi-test.vcf.gz.csi"),
+            config = {};
+
+        const csiIndex = await loadIndex(indexPath, config);
+        assert.ok(csiIndex);
+
+        const blocks = csiIndex.blocksForRange(refID, beg, end);
+        assert.ok(blocks.length > 0)
+
+    })
+
+    test("CSI query - vcf", async function () {
+
+        const chr = "chr1",
+            beg = 1226000,
+            end = 1227000;
+
+        const reader = new FeatureFileReader({
+            format: "vcf",
+            url: require.resolve("./data/tabix/csi-test.vcf.gz"),
+            indexURL: require.resolve("./data/tabix/csi-test.vcf.gz.csi")
         });
+        await reader.readHeader();
+        const features = await reader.readFeatures(chr, beg, end);
+        assert.ok(features);
 
-    });
-
-
-    asyncTest("Washu query", function () {
-        var config = {
-            format: 'bed',
-            indexed: true,
-            url: 'http://vizhub.wustl.edu/hubSample/hg19/GSM429321.gz',
-            indexURL: 'http://vizhub.wustl.edu/hubSample/hg19/GSM429321.gz.tbi'
+        // Verify features are in query range.  The features immediately before and after query range are returned by design
+        const len = features.length;
+        assert.ok(len > 0);
+        for (let i = 1; i < len - 1; i++) {
+            const f = features[i];
+            assert.ok(f.chr === chr && f.end >= beg && f.start <= end);
         }
+    })
 
-        var tb = new igv.FeatureFileReader(config);
-        tb.readHeader()
-            .then(function (header) {
+    test("CSI query - gtf", async function () {
 
-                const start = 26733030;
-                const end = 27694134;
-                const chr = 'chr7';
-                tb.readFeatures(chr, start, end)
-                        .then(function (features) {
-                            ok(features.length > 0);
-                            features.forEach(function (f) {
-                                equal(chr, f.chr);
-                                ok(f.start <= end && f.end >= start);
-                            })
-                        })
-                        .catch(function (error) {
-                            console.log(Error('query tabix error: ') + error);
-                            console.log(error.stack);
-                        });
-                }
-            )
-            .catch(function (error) {
-                console.log(Error('load tabix index error: ') + error);
-            });
-    });
+        this.timeout(200000);
 
+        const chr = "10",
+            beg = 400000,
+            end = 500000;
 
-}
+        const reader = new FeatureFileReader({
+            format: "gff3",
+            url: "https://s3.amazonaws.com/igv.org.genomes/hg38/Homo_sapiens.GRCh38.94.chr.gff3.gz",
+            indexURL: "https://s3.amazonaws.com/igv.org.genomes/hg38/Homo_sapiens.GRCh38.94.chr.gff3.gz.csi"
+        });
+        await reader.readHeader();
+        const features = await reader.readFeatures(chr, beg, end);
+        assert.ok(features);
+
+        const len = features.length;
+        assert.ok(len > 0);
+        for (let i = 1; i < len - 1; i++) {
+            const f = features[i];
+            assert.ok(f.chr === chr);
+        }
+    })
+})
 
 
 

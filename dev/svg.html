@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+
+    <title>SVG Dev</title>
+
+    <link href="css/dev.css" rel="stylesheet"/>
+    <link href="css/save_to_svg.css" rel="stylesheet"/>
+
+    <style>
+        #trackList {
+
+            border-color: rgb(127, 127, 127);
+            border-style: solid;
+            border-width: thin;
+
+            width: 480px;
+            height: 256px;
+            overflow-y: auto;
+        }
+
+        div#trackList > div, div#myDiv > h3 {
+
+            font-family: 'PT Sans', sans-serif;
+            font-size: small;
+            font-weight: 400;
+
+            color: #444;
+            margin-left: 16px;
+            margin-top: 4px;
+            margin-bottom: 4px;
+
+            padding-left: 32px;
+        }
+
+        div#myDiv > h3 {
+            font-size: large;
+        }
+
+        div#trackList > div:hover,
+        div#trackList > div:focus,
+        div#trackList > div:active {
+            cursor: pointer;
+            color: white;
+            background-color: rgba(49, 106, 246, 1);
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+<div id="igv-centering-container">
+    <div id='igv-app-container'></div>
+</div>
+
+<div id='igv-draw-svg-button-container'>
+    <button id='igv-draw-svg-button' type="button">
+        <label>Draw SVG</label>
+    </button>
+</div>
+
+<div id="igv-svg-container">
+</div>
+
+</body>
+
+<script type="module">
+
+    import $ from '../js/vendor/jquery-3.3.1.slim.js'
+    import igv from '../js/index.js'
+
+    (async () => {
+
+        const options =
+            {
+                genome: "hg19",
+                showSVGButton: false,
+                // showSampleNames: true,
+                // showTrackLabels: false,
+                // sampleNameViewportWidth: 512,
+                // locus: 'slc25a3',
+                locus: '7',
+                tracks:
+                    [
+                        // {
+                        //     "url": "https://s3-us-west-2.amazonaws.com/ilmn.igv-test/test2.bigWig",
+                        //     "name": "Big BigWig"
+                        // },
+                        // {
+                        //     "type": "alignment",
+                        //     "name": "Heart SLC25A3 - Dropbox CRAM",
+                        //     "url": "https://www.dropbox.com/s/zx7owfskn0jk6ab/heart_slc25a3.cram?dl=0",
+                        //     "indexURL": "https://www.dropbox.com/s/k3r83ckbo0chtm7/heart_slc25a3.crai?dl=0"
+                        // },
+                        {
+                            name: "A SEG Track",
+                            url: "https://data.broadinstitute.org/igvdata/test/igv-web/segmented_data_080520.seg.gz",
+                            indexed: false,
+                            isLog: true,
+                            displayMode: 'EXPANDED',
+                            height: 256
+
+                        }
+                    ]
+            }
+
+        const browser = await igv.createBrowser(document.getElementById('igv-app-container'), options)
+
+        $('#igv-draw-svg-button').on('click', () => browser.saveSVGtoFile({ $container: $('#igv-svg-container') }))
+
+
+    })()
+
+</script>
+</html>

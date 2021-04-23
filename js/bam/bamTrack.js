@@ -23,608 +23,686 @@
  * THE SOFTWARE.
  */
 
+import $ from "../vendor/jquery-3.3.1.slim.js";
+import {Alert} from '../../node_modules/igv-ui/dist/igv-ui.js'
+import BamSource from "./bamSource.js";
+import PairedAlignment from "./pairedAlignment.js";
+import TrackBase from "../trackBase.js";
+import IGVGraphics from "../igv-canvas.js";
+import paintAxis from "../util/paintAxis.js";
+import {createCheckbox} from "../igv-icons.js";
+import MenuUtils from "../ui/menuUtils.js";
+import {PaletteColorTable} from "../util/colorPalletes.js";
+import {IGVColor, StringUtils} from "../../node_modules/igv-utils/src/index.js";
 
-var igv = (function (igv) {
+const alignmentStartGap = 5;
+const downsampleRowHeight = 5;
+const DEFAULT_COVERAGE_TRACK_HEIGHT = 50;
+const DEFAULT_TRACK_HEIGHT = 300;
+const DEFAULT_ALIGNMENT_COLOR = "rgb(185, 185, 185)";
+const DEFAULT_COVERAGE_COLOR = "rgb(150, 150, 150)";
+const DEFAULT_CONNECTOR_COLOR = "rgb(200, 200, 200)";
 
-    var alignmentRowYInset = 0;
-    var alignmentStartGap = 5;
-    var downsampleRowHeight = 5;
-    const DEFAULT_COVERAGE_TRACK_HEIGHT = 50;
-    const DEFAULT_TRACK_HEIGHT = 300;
+class BAMTrack extends TrackBase {
 
-    igv.BAMTrack = function (config) {
+    constructor(config, browser) {
+        super(config, browser);
+    }
 
-        this.featureSource = new igv.BamSource(config);
+    init(config) {
+        super.init(config);
+        this.type = "alignment";
 
-        // Override default track height for bams
-        if(config.height === undefined) config.height = DEFAULT_TRACK_HEIGHT;
-
-        igv.configTrack(this, config);
-
-        if(config.coverageTrackHeight === undefined) {
-            config.coverageTrackHeight = DEFAULT_COVERAGE_TRACK_HEIGHT;
+        if (config.alleleFreqThreshold === undefined) {
+            config.alleleFreqThreshold = 0.2;
         }
+
+        this.featureSource = new BamSource(config, this.browser);
+
+        this.showCoverage = config.showCoverage === undefined ? true : config.showCoverage;
+        this.showAlignments = config.showAlignments === undefined ? true : config.showAlignments;
 
         this.coverageTrack = new CoverageTrack(config, this);
-
         this.alignmentTrack = new AlignmentTrack(config, this);
-
-        this.visibilityWindow = config.visibilityWindow || 30000;     // 30kb default
-
+        this.alignmentTrack.setTop(this.coverageTrack, this.showCoverage)
+        this.visibilityWindow = config.visibilityWindow || 30000;
         this.viewAsPairs = config.viewAsPairs;
+        this.pairsSupported = config.pairsSupported !== false;
+        this.showSoftClips = config.showSoftClips;
+        this.showAllBases = config.showAllBases;
 
-        this.pairsSupported = (undefined === config.pairsSupported);
+        this.showMismatches = config.showMismatches !== false;
+        this.color = config.color ;
+        this.coverageColor = config.coverageColor;
+        this.minFragmentLength = config.minFragmentLength;   // Optional, might be undefined
+        this.maxFragmentLength = config.maxFragmentLength;
 
-        this.color = config.color || "rgb(185, 185, 185)";
-
-        // sort alignment rows
-        this.sortOption = config.sortOption || {sort: "NUCLEOTIDE"};
-        this.sortDirection = true;
-
-        // filter alignments
-        this.filterOption = config.filterOption || {name: "mappingQuality", params: [30, undefined]};
-
-    };
-
-    igv.BAMTrack.prototype.getFeatures = function (chr, bpStart, bpEnd) {
-        return this.featureSource.getAlignments(chr, bpStart, bpEnd);
-    };
-
-    igv.BAMTrack.filters = {
-
-        noop: function () {
-            return function (alignment) {
-                return false;
-            };
-        },
-
-        strand: function (strand) {
-            return function (alignment) {
-                return alignment.strand === strand;
-            };
-        },
-
-        mappingQuality: function (lower, upper) {
-            return function (alignment) {
-
-                if (lower && alignment.mq < lower) {
-                    return true;
-                }
-
-                if (upper && alignment.mq > upper) {
-                    return true;
-                }
-
-                return false;
+        // The sort object can be an array in the case of multi-locus view, however if multiple sort positions
+        // are present for a given reference frame the last one will take precedence
+        if (config.sort) {
+            if (Array.isArray(config.sort)) {
+                // Legacy support
+                this.assignSort(config.sort[0]);
+            } else {
+                this.assignSort(config.sort);
             }
         }
-    };
 
-    // Alt - Click to Sort alignment rows
-    igv.BAMTrack.prototype.altClick = function (genomicLocation, referenceFrame, event) {
+        // Invoke height setter last to allocated to coverage and alignment tracks
+        this.height = (config.height !== undefined ? config.height : DEFAULT_TRACK_HEIGHT);
+    }
 
-        this.alignmentTrack.sortAlignmentRows(genomicLocation, this.sortOption);
+    set height(h) {
+        this._height = h;
+        if (this.coverageTrack && this.showAlignments) {
+            this.alignmentTrack.height = this.showCoverage ? h - this.coverageTrack.height : h;
+        }
+    }
 
-        // TODO - dat. Temporary hack to stand up mult-locus implementation.
-        // TODO - dat. MUST identify viewport that was clicked in.
-        this.trackView.viewports[ 0 ].redrawTile(this.featureSource.alignmentContainer);
-        this.trackView.viewports[ 0 ].$viewport.scrollTop(0);
+    get height() {
+        return this._height;
+    }
 
-        this.sortDirection = !this.sortDirection;
-    };
+    sort(options) {
+        options = this.assignSort(options);
+
+        for (let vp of this.trackView.viewports) {
+            if (vp.containsPosition(options.chr, options.position)) {
+                const alignmentContainer = vp.getCachedFeatures();
+                if (alignmentContainer) {
+                    sortAlignmentRows(options, alignmentContainer);
+                    vp.repaint();
+                }
+            }
+        }
+    }
 
     /**
-     * Optional method to compute pixel height to accomodate the list of features.  The implementation below
-     * has side effects (modifiying the samples hash).  This is unfortunate, but harmless.
+     * Fix syntax problems for sort options.
+     * @param options
+     */
+    assignSort(options) {
+        // convert old syntax
+        if (options.locus) {
+            const range = StringUtils.parseLocusString(options.locus);
+            options.chr = range.chr;
+            options.position = range.start;
+        } else {
+            options.position--;
+        }
+        options.direction = options.direction === "ASC" || options.direction === true;
+
+        // chr aliasing
+        options.chr = this.browser.genome.getChromosomeName(options.chr);
+        this.sortObject = options;
+
+        return this.sortObject;
+    }
+
+    async getFeatures(chr, bpStart, bpEnd, bpPerPixel, viewport) {
+
+        const alignmentContainer = await this.featureSource.getAlignments(chr, bpStart, bpEnd)
+
+        if (alignmentContainer.alignments && alignmentContainer.alignments.length > 99) {
+            if (undefined === this.minFragmentLength) {
+                this.minFragmentLength = alignmentContainer.pairedEndStats.lowerFragmentLength;
+            }
+            if (undefined === this.maxFragmentLength) {
+                this.maxFragmentLength = alignmentContainer.pairedEndStats.upperFragmentLength;
+            }
+        }
+
+        const sort = this.sortObject;
+        if (sort) {
+            if (sort.chr === chr && sort.position >= bpStart && sort.position <= bpEnd) {
+                sortAlignmentRows(sort, alignmentContainer);
+            }
+        }
+
+        return alignmentContainer;
+    }
+
+
+    /**
+     * Compute the pixel height required to display all content.  This is not the same as the viewport height
+     * (track.height) which might include a scrollbar.
      *
      * @param alignmentContainer
      * @returns {number}
      */
-    igv.BAMTrack.prototype.computePixelHeight = function (alignmentContainer) {
+    computePixelHeight(alignmentContainer) {
+        return (this.showCoverage ? this.coverageTrack.height : 0) +
+            (this.showAlignments ? this.alignmentTrack.computePixelHeight(alignmentContainer) : 0) +
+            15;
+    }
 
-        return this.coverageTrack.computePixelHeight(alignmentContainer) +
-            this.alignmentTrack.computePixelHeight(alignmentContainer);
+    draw(options) {
 
-    };
+        IGVGraphics.fillRect(options.context, 0, options.pixelTop, options.pixelWidth, options.pixelHeight, {'fillStyle': "rgb(255, 255, 255)"});
 
-    igv.BAMTrack.prototype.draw = function (options) {
-
-        if(this.coverageTrack.height > 0) {
+        if (true === this.showCoverage && this.coverageTrack.height > 0) {
+            this.trackView.axisCanvas.style.display = 'block'
             this.coverageTrack.draw(options);
-        }
-
-        this.alignmentTrack.draw(options);
-    };
-
-    igv.BAMTrack.prototype.paintAxis = function (ctx, pixelWidth, pixelHeight) {
-
-        this.coverageTrack.paintAxis(ctx, pixelWidth, this.coverageTrackHeight);
-
-    };
-
-    igv.BAMTrack.prototype.popupMenuItemList = function (config) {
-
-        var self = this,
-            $e,
-            clickHandler,
-            list = [];
-
-        $e = $('<div>');
-        $e.text('Sort by base');
-
-        clickHandler = function () {
-
-            self.alignmentTrack.sortAlignmentRows(config.genomicLocation, self.sortOption);
-
-            config.viewport.redrawTile(self.featureSource.alignmentContainer);
-
-            config.viewport.$viewport.scrollTop(0);
-
-            self.sortDirection = !(self.sortDirection);
-
-            config.popover.hide();
-
-        };
-
-        list.push({ name: undefined, object: $e, click: clickHandler, init: undefined });
-
-        if (false === self.viewAsPairs) {
-
-            $e = $('<div>');
-            $e.text('View mate in split screen');
-
-            clickHandler = function () {
-                self.alignmentTrack.popupMenuItemList(config);
-            };
-
-            list.push({ name: undefined, object: $e, click: clickHandler, init: undefined });
-
-        }
-
-        return list;
-
-    };
-
-    igv.BAMTrack.prototype.popupData = function (genomicLocation, xOffset, yOffset, referenceFrame) {
-
-        if (yOffset >= this.coverageTrack.top && yOffset < this.coverageTrack.height) {
-            return this.coverageTrack.popupData(genomicLocation, xOffset, this.coverageTrack.top, referenceFrame);
         } else {
-            return this.alignmentTrack.popupData(genomicLocation, xOffset, yOffset - this.alignmentTrack.top, referenceFrame);
+            this.trackView.axisCanvas.style.display = 'none'
         }
 
-    };
+        if (true === this.showAlignments) {
+            this.alignmentTrack.setTop(this.coverageTrack, this.showCoverage)
+            this.alignmentTrack.draw(options);
+        }
+    }
 
-    igv.BAMTrack.prototype.popupDataWithConfiguration = function (config) {
+    paintAxis(ctx, pixelWidth, pixelHeight) {
 
-        if (config.y >= this.coverageTrack.top && config.y < this.coverageTrack.height) {
-            return this.coverageTrack.popupDataWithConfiguration(config);
+        this.coverageTrack.paintAxis(ctx, pixelWidth, this.coverageTrack.height);
+
+        // if (this.browser.isMultiLocusMode()) {
+        //     ctx.clearRect(0, 0, pixelWidth, pixelHeight);
+        // } else {
+        //     this.coverageTrack.paintAxis(ctx, pixelWidth, this.coverageTrack.height);
+        // }
+    }
+
+    contextMenuItemList(config) {
+        return this.alignmentTrack.contextMenuItemList(config);
+    }
+
+    popupData(config) {
+
+        if (true === this.showCoverage && config.y >= this.coverageTrack.top && config.y < this.coverageTrack.height) {
+            return this.coverageTrack.popupData(config);
         } else {
-            return this.alignmentTrack.popupDataWithConfiguration(config);
+            return this.alignmentTrack.popupData(config);
         }
 
-    };
+    }
 
-    igv.BAMTrack.prototype.menuItemList = function (popover) {
+    menuItemList() {
 
-        var self = this,
-            $e,
-            html,
-            menuItems = [],
-            colorByMenuItems = [],
-            tagLabel,
-            selected;
 
-        // color picker
-        menuItems.push(igv.colorPickerMenuItem(popover, this.trackView));
+        // Start with overage track items
+        let menuItems = ["<hr/>"];
+        menuItems = menuItems.concat(MenuUtils.numericDataMenuItems(this.trackView));
 
-        // sort by genomic location
-        menuItems.push(sortMenuItem(popover));
+        // Color by items
+        const $e = $('<div class="igv-track-menu-category igv-track-menu-border-top">');
+        $e.text('Color by:');
+        menuItems.push({name: undefined, object: $e, click: undefined, init: undefined});
 
-        colorByMenuItems.push({key: 'none', label: 'track color'});
-
-        if(!self.viewAsPairs) {
-            colorByMenuItems.push({key: 'strand', label: 'read strand'});
-        }
-
-        if (self.pairsSupported && self.alignmentTrack.hasPairs) {
+        const colorByMenuItems = [{key: 'strand', label: 'read strand'}];
+        if (this.alignmentTrack.hasPairs) {
             colorByMenuItems.push({key: 'firstOfPairStrand', label: 'first-of-pair strand'});
+            colorByMenuItems.push({key: 'pairOrientation', label: 'pair orientation'});
+            colorByMenuItems.push({key: 'fragmentLength', label: 'insert size (TLEN)'});
+        }
+        const tagLabel = 'tag' + (this.alignmentTrack.colorByTag ? ' (' + this.alignmentTrack.colorByTag + ')' : '');
+        colorByMenuItems.push({key: 'tag', label: tagLabel});
+        for (let item of colorByMenuItems) {
+            const selected = (this.alignmentTrack.colorBy === item.key);
+            menuItems.push(this.colorByCB(item, selected));
         }
 
-        tagLabel = 'tag' + (self.alignmentTrack.colorByTag ? ' (' + self.alignmentTrack.colorByTag + ')' : '');
-        colorByMenuItems.push({key: 'tag', label: tagLabel});
+        // Show coverage / alignment options
+        const adjustTrackHeight = () => {
+            if (!this.autoHeight) {
+                const h = 15 +
+                    (this.showCoverage ? this.coverageTrack.height : 0) +
+                    (this.showAlignments ? this.alignmentTrack.height : 0);
+                this.trackView.setTrackHeight(h);
+            }
+        }
 
-        $e = $('<div class="igv-track-menu-category igv-track-menu-border-top">');
-        $e.text('Color by');
-        menuItems.push({ name: undefined, object: $e, click: undefined, init: undefined });
-        // menuItems.push('<div class="igv-track-menu-category igv-track-menu-border-top">Color by</div>');
-
-        colorByMenuItems.forEach(function (item) {
-            selected = (self.alignmentTrack.colorBy === item.key);
-            menuItems.push(colorByMarkup(item, selected));
+        menuItems.push({object: $('<div class="igv-track-menu-border-top">')});
+        menuItems.push({
+            object: createCheckbox("Show Coverage", this.showCoverage),
+            click: () => {
+                this.showCoverage = !this.showCoverage;
+                adjustTrackHeight();
+                this.trackView.checkContentHeight();
+                this.trackView.repaintViews();
+            }
+        });
+        menuItems.push({
+            object: createCheckbox("Show Alignments", this.showAlignments),
+            click: () => {
+                this.showAlignments = !this.showAlignments;
+                adjustTrackHeight();
+                this.trackView.checkContentHeight();
+                this.trackView.repaintViews();
+            }
         });
 
-        html = [];
-        if (self.pairsSupported && self.alignmentTrack.hasPairs) {
+        // Show all bases
+        menuItems.push({object: $('<div class="igv-track-menu-border-top">')});
+        menuItems.push({
+            object: createCheckbox("Show all bases", this.showAllBases),
+            click: () => {
+                this.showAllBases = !this.showAllBases;
+                this.config.showAllBases = this.showAllBases;
+                this.trackView.repaintViews();
+            }
+        });
 
-            html.push('<div class="igv-track-menu-border-top">');
-            html.push(true === self.viewAsPairs ? '<i class="fa fa-check">' : '<i class="fa fa-check fa-check-hidden">');
-            html.push('</i>');
-            html.push('View as pairs');
-            html.push('</div>');
+        // Soft clips
+        menuItems.push({
+            object: createCheckbox("Show soft clips", this.showSoftClips),
+            click: () => {
+                this.showSoftClips = !this.showSoftClips;
+                this.config.showSoftClips = this.showSoftClips;
+                this.featureSource.setShowSoftClips(this.showSoftClips);
+                const alignmentContainers = this.getCachedAlignmentContainers();
+                for (let ac of alignmentContainers) {
+                    ac.setShowSoftClips(this.showSoftClips);
+                }
+                this.trackView.repaintViews();
+            }
+        });
 
+        // View as pairs
+        if (this.pairsSupported && this.alignmentTrack.hasPairs) {
+            menuItems.push({object: $('<div class="igv-track-menu-border-top">')});
             menuItems.push({
-                object: $(html.join('')),
-                click: function () {
-                    var $fa = $(this).find('i');
-
-                    popover.hide();
-
-                    self.viewAsPairs = !self.viewAsPairs;
-
-                    if (true === self.viewAsPairs) {
-                        $fa.removeClass('fa-check-hidden');
-                    } else {
-                        $fa.addClass('fa-check-hidden');
+                object: createCheckbox("View as pairs", this.viewAsPairs),
+                click: () => {
+                    this.viewAsPairs = !this.viewAsPairs;
+                    this.config.viewAsPairs = this.viewAsPairs;
+                    this.featureSource.setViewAsPairs(this.viewAsPairs);
+                    const alignmentContainers = this.getCachedAlignmentContainers();
+                    for (let ac of alignmentContainers) {
+                        ac.setViewAsPairs(this.viewAsPairs);
                     }
-
-                    self.featureSource.setViewAsPairs(self.viewAsPairs);
-                    self.trackView.update();
+                    this.trackView.repaintViews();
                 }
             });
         }
 
-        return menuItems;
 
-        function colorByMarkup(menuItem, showCheck, index) {
 
-            var $e,
-                clickHandler,
-                parts = [];
+        // Display mode
+        const $displayModeLabel = $('<div class="igv-track-menu-category igv-track-menu-border-top">');
+        $displayModeLabel.text('Display mode:');
+        menuItems.push({name: undefined, object: $displayModeLabel, click: undefined, init: undefined});
 
-            parts.push('<div>');
-
-            parts.push(showCheck ? '<i class="fa fa-check"></i>' : '<i class="fa fa-check fa-check-hidden"></i>');
-
-            if (menuItem.key === 'tag') {
-                parts.push('<span id="color-by-tag">');
-            } else {
-                parts.push('<span>');
+        menuItems.push({
+            object: createCheckbox("expand", this.alignmentTrack.displayMode === "EXPANDED"),
+            click: () => {
+                this.alignmentTrack.displayMode = "EXPANDED";
+                this.config.displayMode = "EXPANDED";
+                this.trackView.checkContentHeight();
+                this.trackView.repaintViews();
             }
+        });
 
-            parts.push(menuItem.label);
-            parts.push('</span>');
+        menuItems.push({
+            object: createCheckbox("squish", this.alignmentTrack.displayMode === "SQUISHED"),
+            click: () => {
+                this.alignmentTrack.displayMode = "SQUISHED";
+                this.config.displayMode = "SQUISHED";
+                this.trackView.checkContentHeight();
+                this.trackView.repaintViews();
+            }
+        });
 
-            parts.push('</div>');
-
-            $e = $(parts.join(''));
-
-            clickHandler = function () {
-
-                igv.popover.hide();
-
-                if ('tag' === menuItem.key) {
-
-                    igv.dialog.configure(
-
-                        function () { return "Tag Name" },
-
-                        self.alignmentTrack.colorByTag ? self.alignmentTrack.colorByTag : '',
-
-                        function () {
-                            var tag = igv.dialog.$dialogInput.val().trim();
-                            self.alignmentTrack.colorBy = 'tag';
-
-                            if(tag !== self.alignmentTrack.colorByTag) {
-                                self.alignmentTrack.colorByTag = igv.dialog.$dialogInput.val().trim();
-                                self.alignmentTrack.tagColors = new igv.PaletteColorTable("Set1");
-                                $('#color-by-tag').text(self.alignmentTrack.colorByTag);
-                            }
-
-                            self.trackView.update();
-                        });
-
-                    igv.dialog.show($(self.trackView.trackDiv));
-
-                } else {
-                    self.alignmentTrack.colorBy = menuItem.key;
-                    self.trackView.update();
-                }
-            };
-
-            return { name: undefined, object: $e, click: clickHandler, init: undefined }
-
-        }
-
-        function sortMenuItem(popover) {
-
-            var $e,
-                clickHandler;
-
-            $e = $('<div>');
-            $e.text('Sort by base');
-
-            clickHandler = function () {
-                var genomicState = _.first(igv.browser.genomicStateList),
-                    referenceFrame = genomicState.referenceFrame,
-                    genomicLocation,
-                    viewportHalfWidth;
-
-                popover.hide();
-
-                viewportHalfWidth = Math.floor(0.5 * (igv.browser.viewportContainerWidth()/genomicState.locusCount));
-                genomicLocation = Math.floor((referenceFrame.start) + referenceFrame.toBP(viewportHalfWidth));
-
-                self.altClick(genomicLocation, undefined, undefined);
-
-                if ("show center guide" === igv.browser.centerGuide.$centerGuideToggle.text()) {
-                    igv.browser.centerGuide.$centerGuideToggle.trigger( "click" );
-                }
-
-            };
-
-            return { name: undefined, object: $e, click: clickHandler, init: undefined }
-        }
-
-    };
-
-    function shadedBaseColor(qual, nucleotide, genomicLocation) {
-
-        var color,
-            alpha,
-            minQ = 5,   //prefs.getAsInt(PreferenceManager.SAM_BASE_QUALITY_MIN),
-            maxQ = 20,  //prefs.getAsInt(PreferenceManager.SAM_BASE_QUALITY_MAX);
-            foregroundColor = igv.nucleotideColorComponents[nucleotide],
-            backgroundColor = [255, 255, 255];   // White
-
-
-        //if (171167156 === genomicLocation) {
-        //    // NOTE: Add 1 when presenting genomic location
-        //    console.log("shadedBaseColor - locus " + igv.numberFormatter(1 + genomicLocation) + " qual " + qual);
-        //}
-
-        if (!foregroundColor) return;
-
-        if (qual < minQ) {
-            alpha = 0.1;
-        } else {
-            alpha = Math.max(0.1, Math.min(1.0, 0.1 + 0.9 * (qual - minQ) / (maxQ - minQ)));
-        }
-        // Round alpha to nearest 0.1
-        alpha = Math.round(alpha * 10) / 10.0;
-
-        if (alpha >= 1) {
-            color = igv.nucleotideColors[nucleotide];
-        }
-        else {
-            color = "rgba(" + foregroundColor[0] + "," + foregroundColor[1] + "," + foregroundColor[2] + "," + alpha + ")";    //igv.getCompositeColor(backgroundColor, foregroundColor, alpha);
-        }
-        return color;
+        return menuItems;
     }
 
-    CoverageTrack = function (config, parent) {
 
+    /**
+     * Create a "color by" checkbox menu item, optionally initially checked
+     * @param menuItem
+     * @param showCheck
+     * @returns {{init: undefined, name: undefined, click: clickHandler, object: (jQuery|HTMLElement|jQuery.fn.init)}}
+     */
+    colorByCB(menuItem, showCheck) {
+        const $e = createCheckbox(menuItem.label, showCheck);
+        const clickHandler = (ev) => {
+
+            if (menuItem.key === this.alignmentTrack.colorBy) {
+                this.alignmentTrack.colorBy = 'none';
+                this.config.colorBy = 'none';
+                this.trackView.repaintViews();
+
+            } else if ('tag' === menuItem.key) {
+                this.browser.inputDialog.present({
+                    label: 'Tag Name',
+                    value: this.alignmentTrack.colorByTag ? this.alignmentTrack.colorByTag : '',
+                    callback: (tag) => {
+                        this.alignmentTrack.colorBy = 'tag';
+                        this.config.colorBy = 'tag';
+
+                        if (tag !== this.alignmentTrack.colorByTag) {
+                            this.alignmentTrack.colorByTag = tag;
+                            this.config.colorByTag = tag;
+                            this.alignmentTrack.tagColors = new PaletteColorTable("Set1");
+                            $('#color-by-tag').text(self.alignmentTrack.colorByTag);
+                        }
+
+                        this.trackView.repaintViews();
+                    }
+                }, ev)
+
+            } else {
+                this.alignmentTrack.colorBy = menuItem.key;
+                this.config.colorBy = menuItem.key;
+                this.trackView.repaintViews();
+            }
+
+        };
+
+        return {name: undefined, object: $e, click: clickHandler, init: undefined}
+    }
+
+    /**
+     * Called when the track is removed.  Do any needed cleanup here
+     */
+    dispose() {
+        this.trackView = undefined;
+    }
+
+    /**
+     * Return the current state of the track.  Used to create sessions and bookmarks.
+     *
+     * @returns {*|{}}
+     */
+    getState() {
+
+        const config = super.getState();
+
+        if (this.sortObject) {
+            config.sort = {
+                chr: this.sortObject.chr,
+                position: this.sortObject.position + 1,
+                option: this.sortObject.option,
+                direction: this.sortObject.direction ? "ASC" : "DESC"
+            }
+        }
+
+        return config;
+    }
+
+    getCachedAlignmentContainers() {
+        return this.trackView.viewports.map(vp => vp.getCachedFeatures())
+    }
+
+    get dataRange() {
+        return this.coverageTrack.dataRange;
+    }
+
+    set dataRange(dataRange) {
+        this.coverageTrack.dataRange = dataRange;
+    }
+
+    get logScale() {
+        return this.coverageTrack.logScale;
+    }
+
+    set logScale(logScale) {
+        this.coverageTrack.logScale = logScale;
+    }
+
+    get autoscale() {
+        return this.coverageTrack.autoscale;
+    }
+
+    set autoscale(autoscale) {
+        this.coverageTrack.autoscale = autoscale;
+    }
+}
+
+
+class CoverageTrack {
+
+    constructor(config, parent) {
         this.parent = parent;
         this.featureSource = parent.featureSource;
+        this.height = config.coverageTrackHeight !== undefined ? config.coverageTrackHeight : DEFAULT_COVERAGE_TRACK_HEIGHT;
+
+        this.paintAxis = paintAxis;
         this.top = 0;
 
+        this.autoscale = config.autoscale || config.max === undefined;
+        if (!this.autoscale) {
+            this.dataRange = {
+                min: config.min || 0,
+                max: config.max
+            }
+        }
 
-        this.height = config.coverageTrackHeight;
-        this.dataRange = {min: 0};   // Leav max undefined
-        this.paintAxis = igv.paintAxis;
-    };
+    }
 
-    CoverageTrack.prototype.computePixelHeight = function (alignmentContainer) {
-        return this.height;
-    };
+    draw(options) {
 
-    CoverageTrack.prototype.draw = function (options) {
+        const pixelTop = options.pixelTop;
+        const pixelBottom = pixelTop + options.pixelHeight;
+        const nucleotideColors = this.parent.browser.nucleotideColors;
 
-        var self = this,
-            alignmentContainer = options.features,
-            ctx = options.context,
-            bpPerPixel = options.bpPerPixel,
-            bpStart = options.bpStart,
-            pixelWidth = options.pixelWidth,
-            bpEnd = bpStart + pixelWidth * bpPerPixel + 1,
-            coverageMap = alignmentContainer.coverageMap,
-            bp,
-            x,
-            y,
-            w,
-            h,
-            refBase,
-            i,
-            len,
-            item,
-            accumulatedHeight,
-            sequence;
+        if (pixelTop > this.height) {
+            return; //scrolled out of view
+        }
 
-        if (this.top) ctx.translate(0, top);
+        const ctx = options.context;
+        const alignmentContainer = options.features;
+        const coverageMap = alignmentContainer.coverageMap;
 
-        if (coverageMap.refSeq) sequence = coverageMap.refSeq.toUpperCase();
+        let sequence;
+        if (coverageMap.refSeq) {
+            sequence = coverageMap.refSeq.toUpperCase();
+        }
 
-        this.dataRange.max = coverageMap.maximum;
+        const bpPerPixel = options.bpPerPixel;
+        const bpStart = options.bpStart;
+        const pixelWidth = options.pixelWidth;
+        const bpEnd = bpStart + pixelWidth * bpPerPixel + 1;
 
-        // paint backdrop color for all coverage buckets
-        w = Math.max(1, Math.ceil(1.0 / bpPerPixel));
-        for (i = 0, len = coverageMap.coverage.length; i < len; i++) {
+        // paint for all coverage buckets
+        // If alignment track color is != default, use it
+        let color = this.parent.coverageColor || DEFAULT_COVERAGE_COLOR;
+        if (this.parent.color !== undefined) {
+            color = IGVColor.darkenLighten(this.parent.color, -35);
+        }
 
-            bp = (coverageMap.bpStart + i);
+        IGVGraphics.setProperties(ctx, {
+            fillStyle: color,
+            strokeStyle: color
+        });
+
+        const w = Math.max(1, Math.ceil(1.0 / bpPerPixel));
+        for (let i = 0, len = coverageMap.coverage.length; i < len; i++) {
+
+            const bp = (coverageMap.bpStart + i);
             if (bp < bpStart) continue;
             if (bp > bpEnd) break;
 
-            item = coverageMap.coverage[i];
+            const item = coverageMap.coverage[i];
             if (!item) continue;
 
-            h = Math.round((item.total / this.dataRange.max) * this.height);
-            y = this.height - h;
-            x = Math.floor((bp - bpStart) / bpPerPixel);
+            const h = Math.round((item.total / this.dataRange.max) * this.height);
+            const y = this.height - h;
+            const x = Math.floor((bp - bpStart) / bpPerPixel);
 
 
-            igv.graphics.setProperties(ctx, {fillStyle: this.parent.color, strokeStyle: this.color});
-            // igv.graphics.setProperties(ctx, {fillStyle: "rgba(0, 200, 0, 0.25)", strokeStyle: "rgba(0, 200, 0, 0.25)" });
-            igv.graphics.fillRect(ctx, x, y, w, h);
+            // IGVGraphics.setProperties(ctx, {fillStyle: "rgba(0, 200, 0, 0.25)", strokeStyle: "rgba(0, 200, 0, 0.25)" });
+            IGVGraphics.fillRect(ctx, x, y, w, h);
         }
 
         // coverage mismatch coloring -- don't try to do this in above loop, color bar will be overwritten when w<1
         if (sequence) {
-            for (i = 0, len = coverageMap.coverage.length; i < len; i++) {
+            for (let i = 0, len = coverageMap.coverage.length; i < len; i++) {
 
-                bp = (coverageMap.bpStart + i);
+                const bp = (coverageMap.bpStart + i);
                 if (bp < bpStart) continue;
                 if (bp > bpEnd) break;
 
-                item = coverageMap.coverage[i];
+                const item = coverageMap.coverage[i];
                 if (!item) continue;
 
-                h = (item.total / this.dataRange.max) * this.height;
-                y = this.height - h;
-                x = Math.floor((bp - bpStart) / bpPerPixel);
+                const h = (item.total / this.dataRange.max) * this.height;
+                let y = this.height - h;
+                const x = Math.floor((bp - bpStart) / bpPerPixel);
 
-                refBase = sequence[i];
+                const refBase = sequence[i];
                 if (item.isMismatch(refBase)) {
+                    IGVGraphics.setProperties(ctx, {fillStyle: nucleotideColors[refBase]});
+                    IGVGraphics.fillRect(ctx, x, y, w, h);
 
-                    igv.graphics.setProperties(ctx, {fillStyle: igv.nucleotideColors[refBase]});
-                    igv.graphics.fillRect(ctx, x, y, w, h);
+                    let accumulatedHeight = 0.0;
+                    for (let nucleotide of ["A", "C", "T", "G"]) {
 
-                    accumulatedHeight = 0.0;
-                    ["A", "C", "T", "G"].forEach(function (nucleotide) {
-
-                        var count,
-                            hh;
-
-                        count = item["pos" + nucleotide] + item["neg" + nucleotide];
-
+                        const count = item["pos" + nucleotide] + item["neg" + nucleotide];
 
                         // non-logoritmic
-                        hh = (count / self.dataRange.max) * self.height;
-
-                        y = (self.height - hh) - accumulatedHeight;
+                        const hh = (count / this.dataRange.max) * this.height;
+                        y = (this.height - hh) - accumulatedHeight;
                         accumulatedHeight += hh;
-
-                        igv.graphics.setProperties(ctx, {fillStyle: igv.nucleotideColors[nucleotide]});
-                        igv.graphics.fillRect(ctx, x, y, w, hh);
-                    });
+                        IGVGraphics.setProperties(ctx, {fillStyle: nucleotideColors[nucleotide]});
+                        IGVGraphics.fillRect(ctx, x, y, w, hh);
+                    }
                 }
             }
         }
+    }
 
-    };
+    popupData(config) {
 
-    CoverageTrack.prototype.popupDataWithConfiguration = function (config) {
-        return this.popupData(config.genomicLocation, config.x, this.top, config.viewport.genomicState.referenceFrame);
-    };
+        let features = config.viewport.getCachedFeatures();
+        if (!features || features.length === 0) return;
 
-    CoverageTrack.prototype.popupData = function (genomicLocation, xOffset, yOffset, referenceFrame) {
-
-        var coverageMap = this.featureSource.alignmentContainer.coverageMap,
-            coverageMapIndex,
-            coverage,
-            nameValues = [];
-
-
-        coverageMapIndex = genomicLocation - coverageMap.bpStart;
-        coverage = coverageMap.coverage[coverageMapIndex];
+        let genomicLocation = Math.floor(config.genomicLocation),
+            referenceFrame = config.viewport.referenceFrame,
+            coverageMap = features.coverageMap,
+            nameValues = [],
+            coverageMapIndex = Math.floor(genomicLocation - coverageMap.bpStart),
+            coverage = coverageMap.coverage[coverageMapIndex];
 
         if (coverage) {
 
-
-            nameValues.push(referenceFrame.chrName + ":" + igv.numberFormatter(1 + genomicLocation));
+            nameValues.push(referenceFrame.chr + ":" + StringUtils.numberFormatter(1 + genomicLocation));
 
             nameValues.push({name: 'Total Count', value: coverage.total});
 
             // A
-            tmp = coverage.posA + coverage.negA;
-            if (tmp > 0)  tmp = tmp.toString() + " (" + Math.floor(((coverage.posA + coverage.negA) / coverage.total) * 100.0) + "%)";
+            let tmp = coverage.posA + coverage.negA;
+            if (tmp > 0) tmp = tmp.toString() + " (" + Math.round((tmp / coverage.total) * 100.0) + "%, " + coverage.posA + "+, " + coverage.negA + "- )";
             nameValues.push({name: 'A', value: tmp});
-
 
             // C
             tmp = coverage.posC + coverage.negC;
-            if (tmp > 0)  tmp = tmp.toString() + " (" + Math.floor((tmp / coverage.total) * 100.0) + "%)";
+            if (tmp > 0) tmp = tmp.toString() + " (" + Math.round((tmp / coverage.total) * 100.0) + "%, " + coverage.posC + "+, " + coverage.negC + "- )";
             nameValues.push({name: 'C', value: tmp});
 
             // G
             tmp = coverage.posG + coverage.negG;
-            if (tmp > 0)  tmp = tmp.toString() + " (" + Math.floor((tmp / coverage.total) * 100.0) + "%)";
+            if (tmp > 0) tmp = tmp.toString() + " (" + Math.round((tmp / coverage.total) * 100.0) + "%, " + coverage.posG + "+, " + coverage.negG + "- )";
             nameValues.push({name: 'G', value: tmp});
 
             // T
             tmp = coverage.posT + coverage.negT;
-            if (tmp > 0)  tmp = tmp.toString() + " (" + Math.floor((tmp / coverage.total) * 100.0) + "%)";
+            if (tmp > 0) tmp = tmp.toString() + " (" + Math.round((tmp / coverage.total) * 100.0) + "%, " + coverage.posT + "+, " + coverage.negT + "- )";
             nameValues.push({name: 'T', value: tmp});
 
             // N
             tmp = coverage.posN + coverage.negN;
-            if (tmp > 0)  tmp = tmp.toString() + " (" + Math.floor((tmp / coverage.total) * 100.0) + "%)";
+            if (tmp > 0) tmp = tmp.toString() + " (" + Math.round((tmp / coverage.total) * 100.0) + "%, " + coverage.posN + "+, " + coverage.negN + "- )";
             nameValues.push({name: 'N', value: tmp});
 
+            nameValues.push('<HR/>');
+            nameValues.push({name: 'DEL', value: coverage.del.toString()});
+            nameValues.push({name: 'INS', value: coverage.ins.toString()});
         }
-
 
         return nameValues;
 
-    };
+    }
+}
 
-    AlignmentTrack = function (config, parent) {
+class AlignmentTrack {
+
+    constructor(config, parent) {
 
         this.parent = parent;
+        this.browser = parent.browser;
         this.featureSource = parent.featureSource;
-        this.top = config.coverageTrackHeight == 0 ? 0 : config.coverageTrackHeight  + 5;
+        this.top = 0 === config.coverageTrackHeight ? 0 : config.coverageTrackHeight + 5;
+        this.displayMode = config.displayMode || "EXPANDED";
         this.alignmentRowHeight = config.alignmentRowHeight || 14;
+        this.squishedRowHeight = config.squishedRowHeight || 3;
 
         this.negStrandColor = config.negStrandColor || "rgba(150, 150, 230, 0.75)";
         this.posStrandColor = config.posStrandColor || "rgba(230, 150, 150, 0.75)";
         this.insertionColor = config.insertionColor || "rgb(138, 94, 161)";
         this.deletionColor = config.deletionColor || "black";
         this.skippedColor = config.skippedColor || "rgb(150, 170, 170)";
+        this.pairConnectorColor = config.pairConnectorColor;
 
-        this.colorBy = config.colorBy || "none";
-        this.colorByTag = config.colorByTag;
+        this.smallFragmentLengthColor = config.smallFragmentLengthColor || "rgb(0, 0, 150)";
+        this.largeFragmentLengthColor = config.largeFragmentLengthColor || "rgb(200, 0, 0)";
+
+        this.pairOrientation = config.pairOrienation || 'fr';
+        this.pairColors = {};
+        this.pairColors["RL"] = config.rlColor || "rgb(0, 150, 0)";
+        this.pairColors["RR"] = config.rrColor || "rgb(20, 50, 200)";
+        this.pairColors["LL"] = config.llColor || "rgb(0, 150, 150)";
+
+        this.colorBy = config.colorBy || "pairOrientation";
+        this.colorByTag = config.colorByTag ? config.colorByTag.toUpperCase() : undefined;
         this.bamColorTag = config.bamColorTag === undefined ? "YC" : config.bamColorTag;
 
-        // sort alignment rows
-        this.sortOption = config.sortOption || {sort: "NUCLEOTIDE"};
-
-        this.sortDirection = true;
+        this.hideSmallIndels = config.hideSmallIndels;
+        this.indelSizeThreshold = config.indelSizeThreshold || 1;
 
         this.hasPairs = false;   // Until proven otherwise
+    }
 
-    };
+    setTop(coverageTrack, showCoverage) {
+        this.top = (0 === coverageTrack.height || false === showCoverage) ? 0 : (5 + coverageTrack.height);
+    }
 
-    AlignmentTrack.prototype.computePixelHeight = function (alignmentContainer) {
+    /**
+     * Compute the pixel height required to display all content.
+     *
+     * @param alignmentContainer
+     * @returns {number|*}
+     */
+    computePixelHeight(alignmentContainer) {
 
         if (alignmentContainer.packedAlignmentRows) {
-            var h = 0;
-            if (alignmentContainer.hasDownsampledIntervals()) {
-                h += downsampleRowHeight + alignmentStartGap;
-            }
-            return h + (this.alignmentRowHeight * alignmentContainer.packedAlignmentRows.length) + 5;
+            const h = alignmentContainer.hasDownsampledIntervals() ? downsampleRowHeight + alignmentStartGap : 0;
+            const alignmentRowHeight = this.displayMode === "SQUISHED" ?
+                this.squishedRowHeight :
+                this.alignmentRowHeight;
+            return h + (alignmentRowHeight * alignmentContainer.packedAlignmentRows.length) + 5;
+        } else {
+            return 0;
         }
-        else {
-            return this.height;
+    }
+
+    draw(options) {
+
+        const alignmentContainer = options.features
+        const ctx = options.context
+        const bpPerPixel = options.bpPerPixel
+        const bpStart = options.bpStart
+        const pixelWidth = options.pixelWidth
+        const bpEnd = bpStart + pixelWidth * bpPerPixel + 1
+        const packedAlignmentRows = alignmentContainer.packedAlignmentRows
+        const showSoftClips = this.parent.showSoftClips;
+        const showAllBases = this.parent.showAllBases;
+        const nucleotideColors = this.browser.nucleotideColors;
+
+        ctx.save();
+
+        let referenceSequence = alignmentContainer.sequence;
+        if (referenceSequence) {
+            referenceSequence = referenceSequence.toUpperCase();
         }
+        let alignmentRowYInset = 0;
 
-    };
-
-    AlignmentTrack.prototype.draw = function (options) {
-
-        var self = this,
-            alignmentContainer = options.features,
-            ctx = options.context,
-            bpPerPixel = options.bpPerPixel,
-            bpStart = options.bpStart,
-            pixelWidth = options.pixelWidth,
-            bpEnd = bpStart + pixelWidth * bpPerPixel + 1,
-            packedAlignmentRows = alignmentContainer.packedAlignmentRows,
-            sequence = alignmentContainer.sequence;
-
-        if (this.top) ctx.translate(0, this.top);
-
-        if (sequence) {
-            sequence = sequence.toUpperCase();
+        let pixelTop = options.pixelTop;
+        if (this.top) {
+            ctx.translate(0, this.top);
         }
+        const pixelBottom = pixelTop + options.pixelHeight;
 
         if (alignmentContainer.hasDownsampledIntervals()) {
             alignmentRowYInset = downsampleRowHeight + alignmentStartGap;
@@ -637,63 +715,68 @@ var igv = (function (igv) {
                     xBlockStart += 1;
                     xBlockEnd -= 1;
                 }
-                igv.graphics.fillRect(ctx, xBlockStart, 2, (xBlockEnd - xBlockStart), downsampleRowHeight - 2, {fillStyle: "black"});
+                IGVGraphics.fillRect(ctx, xBlockStart, 2, (xBlockEnd - xBlockStart), downsampleRowHeight - 2, {fillStyle: "black"});
             })
 
-        }
-        else {
+        } else {
             alignmentRowYInset = 0;
         }
 
+        // Transient variable -- rewritten on every draw, used for click object selection
+        this.alignmentsYOffset = alignmentRowYInset;
+        const alignmentRowHeight = this.displayMode === "SQUISHED" ?
+            this.squishedRowHeight :
+            this.alignmentRowHeight;
+
         if (packedAlignmentRows) {
 
-            packedAlignmentRows.forEach(function renderAlignmentRow(alignmentRow, i) {
+            const nRows = packedAlignmentRows.length;
 
-                var yRect = alignmentRowYInset + (self.alignmentRowHeight * i),
-                    alignmentHeight = self.alignmentRowHeight - 2,
-                    i,
-                    b,
-                    alignment;
+            for (let rowIndex = 0; rowIndex < nRows; rowIndex++) {
 
-                for (i = 0; i < alignmentRow.alignments.length; i++) {
+                const alignmentRow = packedAlignmentRows[rowIndex];
+                const alignmentY = alignmentRowYInset + (alignmentRowHeight * rowIndex);
+                const alignmentHeight = alignmentRowHeight <= 4 ? alignmentRowHeight : alignmentRowHeight - 2;
 
-                    alignment = alignmentRow.alignments[i];
+                if (alignmentY > pixelBottom) {
+                    break;
+                } else if (alignmentY + alignmentHeight < pixelTop) {
+                    continue;
+                }
 
-                    self.hasPairs = self.hasPairs || alignment.isPaired();
+                for (let alignment of alignmentRow.alignments) {
+
+                    this.hasPairs = this.hasPairs || alignment.isPaired();
 
                     if ((alignment.start + alignment.lengthOnRef) < bpStart) continue;
                     if (alignment.start > bpEnd) break;
-
-
                     if (true === alignment.hidden) {
                         continue;
                     }
 
-                    if (alignment instanceof igv.PairedAlignment) {
+                    if (alignment instanceof PairedAlignment) {
 
-                        drawPairConnector(alignment, yRect, alignmentHeight);
+                        drawPairConnector.call(this, alignment, alignmentY, alignmentHeight);
 
-                        drawSingleAlignment(alignment.firstAlignment, yRect, alignmentHeight);
+                        drawSingleAlignment.call(this, alignment.firstAlignment, alignmentY, alignmentHeight);
 
                         if (alignment.secondAlignment) {
-                            drawSingleAlignment(alignment.secondAlignment, yRect, alignmentHeight);
+                            drawSingleAlignment.call(this, alignment.secondAlignment, alignmentY, alignmentHeight);
                         }
 
-                    }
-                    else {
-                        drawSingleAlignment(alignment, yRect, alignmentHeight);
+                    } else {
+                        drawSingleAlignment.call(this, alignment, alignmentY, alignmentHeight);
                     }
 
                 }
-            });
+            }
         }
-
+        ctx.restore();
 
         // alignment is a PairedAlignment
         function drawPairConnector(alignment, yRect, alignmentHeight) {
 
-            var alignmentColor = getAlignmentColor.call(self, alignment.firstAlignment),
-                outlineColor = 'alignmentColor',
+            var connectorColor = this.getConnectorColor(alignment.firstAlignment),
                 xBlockStart = (alignment.connectingStart - bpStart) / bpPerPixel,
                 xBlockEnd = (alignment.connectingEnd - bpStart) / bpPerPixel,
                 yStrokedLine = yRect + alignmentHeight / 2;
@@ -701,389 +784,612 @@ var igv = (function (igv) {
             if ((alignment.connectingEnd) < bpStart || alignment.connectingStart > bpEnd) {
                 return;
             }
-
             if (alignment.mq <= 0) {
-                alignmentColor = igv.addAlphaToRGB(alignmentColor, "0.15");
+                connectorColor = IGVColor.addAlpha(connectorColor, 0.15);
             }
-
-            igv.graphics.setProperties(ctx, { fillStyle: alignmentColor, strokeStyle: outlineColor } );
-
-            igv.graphics.strokeLine(ctx, xBlockStart, yStrokedLine, xBlockEnd, yStrokedLine);
+            IGVGraphics.setProperties(ctx, {fillStyle: connectorColor, strokeStyle: connectorColor});
+            IGVGraphics.strokeLine(ctx, xBlockStart, yStrokedLine, xBlockEnd, yStrokedLine);
 
         }
 
         function drawSingleAlignment(alignment, yRect, alignmentHeight) {
 
-            var alignmentColor = getAlignmentColor.call(self, alignment),
-                outlineColor = 'alignmentColor',
-                lastBlockEnd,
-                blocks = alignment.blocks,
-                block,
-                b;
 
             if ((alignment.start + alignment.lengthOnRef) < bpStart || alignment.start > bpEnd) {
                 return;
             }
 
+            const blocks = showSoftClips ? alignment.blocks : alignment.blocks.filter(b => 'S' !== b.type);
+
+            let alignmentColor = this.getAlignmentColor(alignment);
+            const outlineColor = alignmentColor;
             if (alignment.mq <= 0) {
-                alignmentColor = igv.addAlphaToRGB(alignmentColor, "0.15");
+                alignmentColor = IGVColor.addAlpha(alignmentColor, 0.15);
+            }
+            IGVGraphics.setProperties(ctx, {fillStyle: alignmentColor, strokeStyle: outlineColor});
+
+            let lastBlockEnd;
+            for (let b = 0; b < blocks.length; b++) {   // Can't use forEach here -- we need ability to break
+
+                const block = blocks[b];
+
+                // Somewhat complex test, neccessary to insure gaps are drawn.
+                // If this is not the last block, and the next block starts before the orign (off screen to left) then skip.
+                if ((b !== blocks.length - 1) && blocks[b + 1].start < bpStart) continue;
+
+                drawBlock.call(this, block, b);
+
+                if ((block.start + block.len) > bpEnd) {
+                    // Do this after drawBlock to insure gaps are drawn
+                    break;
+                }
             }
 
-            igv.graphics.setProperties(ctx, { fillStyle: alignmentColor, strokeStyle: outlineColor } );
-
-            for (b = 0; b < blocks.length; b++) {   // Can't use forEach here -- we need ability to break
-
-                block = blocks[b];
-
-                if ((block.start + block.len) < bpStart) continue;
-
-                drawBlock(block);
-
-                if ((block.start + block.len) > bpEnd) break;  // Do this after drawBlock to insure gaps are drawn
-
-
-                if (alignment.insertions) {
-                    alignment.insertions.forEach(function (block) {
-                        var refOffset = block.start - bpStart,
-                            xBlockStart = refOffset / bpPerPixel - 1,
-                            widthBlock = 3;
-                        igv.graphics.fillRect(ctx, xBlockStart, yRect - 1, widthBlock, alignmentHeight + 2, {fillStyle: self.insertionColor});
-                    });
+            if (alignment.insertions) {
+                let lastXBlockStart = -1;
+                for (let insertionBlock of alignment.insertions) {
+                    if (this.hideSmallIndels && insertionBlock.len <= this.indelSizeThreshold) {
+                        continue;
+                    }
+                    if (insertionBlock.start < bpStart) {
+                        continue;
+                    }
+                    if (insertionBlock.start > bpEnd) {
+                        break;
+                    }
+                    const refOffset = insertionBlock.start - bpStart
+                    const xBlockStart = refOffset / bpPerPixel - 1
+                    if ((xBlockStart - lastXBlockStart) > 2) {
+                        const widthBlock = 3
+                        IGVGraphics.fillRect(ctx, xBlockStart, yRect - 1, widthBlock, alignmentHeight + 2, {fillStyle: this.insertionColor});
+                        lastXBlockStart = xBlockStart;
+                    }
                 }
-
             }
 
-            function drawBlock(block) {
-                var seqOffset = block.start - alignmentContainer.start,
-                    xBlockStart = (block.start - bpStart) / bpPerPixel,
-                    xBlockEnd = ((block.start + block.len) - bpStart) / bpPerPixel,
-                    widthBlock = Math.max(1, xBlockEnd - xBlockStart),
-                    widthArrowHead = self.alignmentRowHeight / 2.0,
-                    blockSeq = block.seq.toUpperCase(),
-                    skippedColor = self.skippedColor,
-                    deletionColor = self.deletionColor,
-                    refChar,
-                    readChar,
-                    readQual,
-                    xBase,
-                    widthBase,
-                    colorBase,
-                    x,
-                    y,
-                    i,
-                    yStrokedLine = yRect + alignmentHeight / 2;
+            if (alignment.gaps) {
+                const yStrokedLine = yRect + alignmentHeight / 2;
+                for (let gap of alignment.gaps) {
+                    const sPixel = (gap.start - bpStart) / bpPerPixel;
+                    const ePixel = ((gap.start + gap.len) - bpStart) / bpPerPixel;
+                    const color = ("D" === gap.type) ? this.deletionColor : this.skippedColor;
+                    IGVGraphics.strokeLine(ctx, sPixel, yStrokedLine, ePixel, yStrokedLine, {strokeStyle: color});
+                }
+            }
 
-                if (block.gapType !== undefined && xBlockEnd !== undefined && lastBlockEnd !== undefined) {
-                    if ("D" === block.gapType) {
-                        igv.graphics.strokeLine(ctx, lastBlockEnd, yStrokedLine, xBlockStart, yStrokedLine, {strokeStyle: deletionColor});
+
+            function drawBlock(block, b) {
+
+                const offsetBP = block.start - alignmentContainer.start;
+                const blockStartPixel = (block.start - bpStart) / bpPerPixel;
+                const blockEndPixel = ((block.start + block.len) - bpStart) / bpPerPixel;
+                const blockWidthPixel = Math.max(1, blockEndPixel - blockStartPixel);
+                const arrowHeadWidthPixel = alignmentRowHeight / 2.0;
+                const isSoftClip = 'S' === block.type;
+
+                const strokeOutline =
+                    alignment.mq <= 0 ||
+                    this.highlightedAlignmentReadNamed === alignment.readName ||
+                    isSoftClip;
+
+                let blockOutlineColor = outlineColor;
+                if (this.highlightedAlignmentReadNamed === alignment.readName) blockOutlineColor = 'red'
+                else if (isSoftClip) blockOutlineColor = 'rgb(50,50,50)'
+
+                const lastBlockPositiveStrand = (true === alignment.strand && b === blocks.length - 1);
+                const lastBlockReverseStrand = (false === alignment.strand && b === 0);
+                const lastBlock = lastBlockPositiveStrand | lastBlockReverseStrand;
+
+                if (lastBlock) {
+                    let xListPixel;
+                    let yListPixel;
+                    if (lastBlockPositiveStrand) {
+                        xListPixel = [
+                            blockStartPixel,
+                            blockEndPixel,
+                            blockEndPixel + arrowHeadWidthPixel,
+                            blockEndPixel,
+                            blockStartPixel,
+                            blockStartPixel];
+                        yListPixel = [
+                            yRect,
+                            yRect,
+                            yRect + (alignmentHeight / 2.0),
+                            yRect + alignmentHeight,
+                            yRect + alignmentHeight,
+                            yRect];
+
                     }
-                    else {
-                        igv.graphics.strokeLine(ctx, lastBlockEnd, yStrokedLine, xBlockStart, yStrokedLine, {strokeStyle: skippedColor});
+
+                    // Last block on - strand ?
+                    else if (lastBlockReverseStrand) {
+                        xListPixel = [
+                            blockEndPixel,
+                            blockStartPixel,
+                            blockStartPixel - arrowHeadWidthPixel,
+                            blockStartPixel,
+                            blockEndPixel,
+                            blockEndPixel];
+                        yListPixel = [
+                            yRect,
+                            yRect,
+                            yRect + (alignmentHeight / 2.0),
+                            yRect + alignmentHeight,
+                            yRect + alignmentHeight,
+                            yRect];
+
+                    }
+                    IGVGraphics.fillPolygon(ctx, xListPixel, yListPixel, {fillStyle: alignmentColor});
+
+                    if (strokeOutline) {
+                        IGVGraphics.strokePolygon(ctx, xListPixel, yListPixel, {strokeStyle: blockOutlineColor});
                     }
                 }
-                lastBlockEnd = xBlockEnd;
 
-                if (true === alignment.strand && b === blocks.length - 1) {
-                    // Last block on + strand
-                    x = [
-                        xBlockStart,
-                        xBlockEnd,
-                        xBlockEnd + widthArrowHead,
-                        xBlockEnd,
-                        xBlockStart,
-                        xBlockStart];
-                    y = [
-                        yRect,
-                        yRect,
-                        yRect + (alignmentHeight / 2.0),
-                        yRect + alignmentHeight,
-                        yRect + alignmentHeight,
-                        yRect];
-
-                    igv.graphics.fillPolygon(ctx, x, y, { fillStyle: alignmentColor });
-
-                    if (self.highlightedAlignmentReadNamed === alignment.readName) {
-                        igv.graphics.strokePolygon(ctx, x, y, { strokeStyle: 'red' });
-                    }
-
-                    if (alignment.mq <= 0) {
-                        igv.graphics.strokePolygon(ctx, x, y, {strokeStyle: outlineColor});
-                    }
-                }
-                else if (false === alignment.strand && b === 0) {
-                    // First block on - strand
-                    x = [
-                        xBlockEnd,
-                        xBlockStart,
-                        xBlockStart - widthArrowHead,
-                        xBlockStart,
-                        xBlockEnd,
-                        xBlockEnd];
-                    y = [
-                        yRect,
-                        yRect,
-                        yRect + (alignmentHeight / 2.0),
-                        yRect + alignmentHeight,
-                        yRect + alignmentHeight,
-                        yRect];
-
-                    igv.graphics.fillPolygon(ctx, x, y, {fillStyle: alignmentColor});
-
-                    if (self.highlightedAlignmentReadNamed === alignment.readName) {
-                        igv.graphics.strokePolygon(ctx, x, y, { strokeStyle: 'red' });
-                    }
-
-                    if (alignment.mq <= 0) {
-                        igv.graphics.strokePolygon(ctx, x, y, {strokeStyle: outlineColor});
-                    }
-                }
+                // Internal block
                 else {
-                    igv.graphics.fillRect(ctx, xBlockStart, yRect, widthBlock, alignmentHeight, {fillStyle: alignmentColor});
-                    if (alignment.mq <= 0) {
+                    IGVGraphics.fillRect(ctx, blockStartPixel, yRect, blockWidthPixel, alignmentHeight, {fillStyle: alignmentColor});
+
+                    if (strokeOutline) {
                         ctx.save();
-                        ctx.strokeStyle = outlineColor;
-                        ctx.strokeRect(xBlockStart, yRect, widthBlock, alignmentHeight);
+                        ctx.strokeStyle = blockOutlineColor;
+                        ctx.strokeRect(blockStartPixel, yRect, blockWidthPixel, alignmentHeight);
                         ctx.restore();
                     }
                 }
-                // Only do mismatch coloring if a refseq exists to do the comparison
-                if (sequence && blockSeq !== "*") {
-                    for (i = 0, len = blockSeq.length; i < len; i++) {
-                        readChar = blockSeq.charAt(i);
-                        refChar = sequence.charAt(seqOffset + i);
+
+
+                // Mismatch coloring
+
+                if (this.parent.showMismatches && (isSoftClip || showAllBases || (referenceSequence && alignment.seq && alignment.seq !== "*"))) {
+
+                    const seq = alignment.seq ? alignment.seq.toUpperCase() : undefined;
+                    const qual = alignment.qual;
+                    const seqOffset = block.seqOffset;
+
+
+                    for (let i = 0, len = block.len; i < len; i++) {
+
+                        if (offsetBP + i < 0) continue;
+
+                        let readChar = seq ? seq.charAt(seqOffset + i) : '';
+                        const refChar = referenceSequence.charAt(offsetBP + i);
+
                         if (readChar === "=") {
                             readChar = refChar;
                         }
-                        if (readChar === "X" || refChar !== readChar) {
-                            if (block.qual && block.qual.length > i) {
-                                readQual = block.qual[i];
-                                colorBase = shadedBaseColor(readQual, readChar, i + block.start);
+                        if (readChar === "X" || refChar !== readChar || isSoftClip || showAllBases) {
+
+                            let baseColor;
+                            if (!isSoftClip && qual !== undefined && qual.length > seqOffset + i) {
+                                const readQual = qual[seqOffset + i];
+                                baseColor = shadedBaseColor(readQual, nucleotideColors[readChar]);
+                            } else {
+                                baseColor = nucleotideColors[readChar];
                             }
-                            else {
-                                colorBase = igv.nucleotideColors[readChar];
-                            }
-                            if (colorBase) {
-                                xBase = ((block.start + i) - bpStart) / bpPerPixel;
-                                widthBase = Math.max(1, 1 / bpPerPixel);
-                                igv.graphics.fillRect(ctx, xBase, yRect, widthBase, alignmentHeight, { fillStyle: colorBase });
+                            if (baseColor) {
+                                const xPixel = ((block.start + i) - bpStart) / bpPerPixel;
+                                const widthPixel = Math.max(1, 1 / bpPerPixel);
+                                renderBlockOrReadChar(ctx, bpPerPixel, {
+                                    x: xPixel,
+                                    y: yRect,
+                                    width: widthPixel,
+                                    height: alignmentHeight
+                                }, baseColor, readChar);
                             }
                         }
                     }
                 }
             }
+
+            function renderBlockOrReadChar(context, bpp, bbox, color, char) {
+                var threshold,
+                    center;
+
+                threshold = 1.0 / 10.0;
+                if (bpp <= threshold && bbox.height >= 8) {
+
+                    // render letter
+                    const fontHeight = Math.min(10, bbox.height)
+                    context.font = '' + fontHeight + 'px sans-serif';
+                    center = bbox.x + (bbox.width / 2.0);
+                    IGVGraphics.strokeText(context, char, center - (context.measureText(char).width / 2), fontHeight - 1 + bbox.y, {strokeStyle: color});
+                } else {
+
+                    // render colored block
+                    IGVGraphics.fillRect(context, bbox.x, bbox.y, bbox.width, bbox.height, {fillStyle: color});
+                }
+            }
         }
 
     };
 
-    AlignmentTrack.prototype.sortAlignmentRows = function (genomicLocation, sortOption) {
-
-        var self = this;
-
-        this.featureSource.alignmentContainer.packedAlignmentRows.forEach(function (row) {
-            row.updateScore(genomicLocation, self.featureSource.alignmentContainer, sortOption);
-        });
-
-        this.featureSource.alignmentContainer.packedAlignmentRows.sort(function (rowA, rowB) {
-            // return rowA.score - rowB.score;
-            return true === self.sortDirection ? rowA.score - rowB.score : rowB.score - rowA.score;
-        });
-
-    };
-
-    AlignmentTrack.prototype.popupDataWithConfiguration = function (config) {
-
-        var clickedObject;
-
-        clickedObject = this.getClickedAlignment(config.viewport, config.genomicLocation);
-
+    popupData(config) {
+        const clickedObject = this.getClickedObject(config.viewport, config.y, config.genomicLocation);
         return clickedObject ? clickedObject.popupData(config.genomicLocation) : undefined;
     };
 
-    AlignmentTrack.prototype.popupData = function (genomicLocation, xOffset, yOffset, referenceFrame) {
+    contextMenuItemList(clickState) {
 
-        var packedAlignmentRows = this.featureSource.alignmentContainer.packedAlignmentRows,
-            downsampledIntervals = this.featureSource.alignmentContainer.downsampledIntervals,
-            packedAlignmentsIndex,
-            alignmentRow,
-            clickedObject,
-            i, len, tmp;
+        const viewport = clickState.viewport;
+        const list = [];
 
-        packedAlignmentsIndex = Math.floor((yOffset - (alignmentRowYInset)) / this.alignmentRowHeight);
+        const sortByOption = (option) => {
+            const cs = this.parent.sortObject;
+            const direction = (cs && cs.position === Math.floor(clickState.genomicLocation)) ? !cs.direction : true;
+            const newSortObject = {
+                chr: viewport.referenceFrame.chr,
+                position: Math.floor(clickState.genomicLocation),
+                option: option,
+                direction: direction
+            }
+            this.parent.sortObject = newSortObject;
+            sortAlignmentRows(newSortObject, viewport.getCachedFeatures());
+            viewport.repaint();
+        }
+        list.push('<b>Sort by...</b>')
+        list.push({label: '&nbsp; base', click: () => sortByOption("BASE")});
+        list.push({label: '&nbsp; read strand', click: () => sortByOption("STRAND")});
+        list.push({label: '&nbsp; insert size', click: () => sortByOption("INSERT_SIZE")});
+        list.push({label: '&nbsp; gap size', click: () => sortByOption("GAP_SIZE")});
+        list.push({label: '&nbsp; chromosome of mate', click: () => sortByOption("MATE_CHR")});
+        list.push({label: '&nbsp; mapping quality', click: () => sortByOption("MQ")});
+        list.push({
+            label: '&nbsp; tag', click: () => {
+                const cs = this.parent.sortObject;
+                const direction = (cs && cs.position === Math.floor(clickState.genomicLocation)) ? !cs.direction : true;
+                const config =
+                    {
+                        label: 'Tag Name',
+                        value: this.sortByTag ? this.sortByTag : '',
+                        callback: (tag) => {
+                            if (tag) {
+                                const newSortObject = {
+                                    chr: viewport.referenceFrame.chr,
+                                    position: Math.floor(clickState.genomicLocation),
+                                    option: "TAG",
+                                    tag: tag,
+                                    direction: direction
+                                }
+                                this.sortByTag = tag;
+                                this.parent.sortObject = newSortObject;
+                                sortAlignmentRows(newSortObject, viewport.getCachedFeatures());
+                                viewport.repaint();
+                            }
+                        }
+                    };
+                this.browser.inputDialog.present(config, clickState.event);
+            }
+        });
+        list.push('<hr/>');
+
+        const clickedObject = this.getClickedObject(viewport, clickState.y, clickState.genomicLocation);
+        if(clickedObject) {
+
+            const showSoftClips = this.parent.showSoftClips;
+            const clickedAlignment = (typeof clickedObject.alignmentContaining === 'function') ?
+                clickedObject.alignmentContaining(clickState.genomicLocation, showSoftClips) :
+                clickedObject;
+
+            if (clickedAlignment.isPaired() && clickedAlignment.isMateMapped()) {
+                list.push({
+                    label: 'View mate in split screen',
+                    click: () => {
+                        if (clickedAlignment.mate) {
+                            const referenceFrame = clickState.viewport.referenceFrame;
+                            if (this.browser.genome.getChromosome(clickedAlignment.mate.chr)) {
+                                this.highlightedAlignmentReadNamed = clickedAlignment.readName;
+                                this.browser.presentSplitScreenMultiLocusPanel(clickedAlignment, referenceFrame);
+                            } else {
+                                Alert.presentAlert(`Reference does not contain chromosome: ${clickedAlignment.mate.chr}`);
+                            }
+                        }
+                    },
+                    init: undefined
+                });
+            }
+
+            list.push({
+                label: 'View read sequence',
+                click: () => {
+                    const alignment = clickedAlignment;
+                    if (!alignment) return;
+
+                    const seqstring = alignment.seq; //.map(b => String.fromCharCode(b)).join("");
+                    if (!seqstring || "*" === seqstring) {
+                        Alert.presentAlert("Read sequence: *")
+                    } else {
+                        Alert.presentAlert(seqstring);
+                    }
+                }
+            });
+            list.push('<hr/>');
+        }
+
+        return list;
+
+    }
+
+    getClickedObject(viewport, y, genomicLocation) {
+
+        const showSoftClips = this.parent.showSoftClips;
+
+        let features = viewport.getCachedFeatures();
+        if (!features || features.length === 0) return;
+
+        let packedAlignmentRows = features.packedAlignmentRows;
+        let downsampledIntervals = features.downsampledIntervals;
+        const alignmentRowHeight = this.displayMode === "SQUISHED" ?
+            this.squishedRowHeight :
+            this.alignmentRowHeight;
+
+        let packedAlignmentsIndex = Math.floor((y - this.top - this.alignmentsYOffset) / alignmentRowHeight);
 
         if (packedAlignmentsIndex < 0) {
-
-            for (i = 0, len = downsampledIntervals.length; i < len; i++) {
-
-
+            for (let i = 0; i < downsampledIntervals.length; i++) {
                 if (downsampledIntervals[i].start <= genomicLocation && (downsampledIntervals[i].end >= genomicLocation)) {
-                    clickedObject = downsampledIntervals[i];
-                    break;
+                    return downsampledIntervals[i];
                 }
-
             }
-        }
-        else if (packedAlignmentsIndex < packedAlignmentRows.length) {
-
-            alignmentRow = packedAlignmentRows[packedAlignmentsIndex];
-
-            clickedObject = undefined;
-
-            for (i = 0, len = alignmentRow.alignments.length, tmp; i < len; i++) {
-
-                tmp = alignmentRow.alignments[i];
-
-                if (tmp.start <= genomicLocation && (tmp.start + tmp.lengthOnRef >= genomicLocation)) {
-                    clickedObject = tmp;
-                    break;
-                }
-
-            }
+        } else if (packedAlignmentsIndex < packedAlignmentRows.length) {
+            const alignmentRow = packedAlignmentRows[packedAlignmentsIndex];
+            const clicked = alignmentRow.alignments.filter(alignment => alignment.containsLocation(genomicLocation, showSoftClips));
+            if (clicked.length > 0) return clicked[0];
         }
 
-        if (clickedObject) {
-            return clickedObject.popupData(genomicLocation);
-        } else {
-            return [];
-        }
+        return undefined;
 
     };
 
-    AlignmentTrack.prototype.popupMenuItemList = function (config) {
+    /**
+     * Return the color for connectors in paired alignment view.   If explicitly set return that, otherwise return
+     * the alignment color, unless the color option can result in split colors (separte color for each mate).
+     *
+     * @param alignment
+     * @returns {string}
+     */
+    getConnectorColor(alignment) {
 
-        var alignment,
-            loci,
-            mateLoci,
-            index,
-            head,
-            tail;
-
-        this.highlightedAlignmentReadNamed = undefined;
-
-        config.popover.hide();
-
-        alignment = this.getClickedAlignment(config.viewport, config.genomicLocation);
-
-        if (alignment) {
-
-            this.highlightedAlignmentReadNamed = alignment.readName;
-
-            loci = _.map(igv.browser.genomicStateList, function(gs) {
-                return gs.locusSearchString;
-            });
-
-            index = config.viewport.genomicState.locusIndex;
-            head = _.first(loci, 1 + index);
-            tail = _.size(loci) === 1 ? undefined : _.last(loci, _.size(loci) - (1 + index));
-
-            mateLoci = locusPairWithAlignmentAndViewport(alignment, config.viewport);
-
-            // discard last element of head and replace with mateLoci
-            head.splice(-1, 1);
-            Array.prototype.push.apply(head, mateLoci);
-            if (tail) {
-                Array.prototype.push.apply(head, tail);
-            }
-
-            igv.browser.parseSearchInput( head.join(' ') );
+        if (this.pairConnectorColor) {
+            return this.pairConnectorColor
         }
 
-        function locusPairWithAlignmentAndViewport(alignment, viewport) {
-            var left,
-                right,
-                centroid,
-                widthBP;
-
-            widthBP = viewport.$viewport.width() * viewport.genomicState.referenceFrame.bpPerPixel;
-
-            centroid = (alignment.start + (alignment.start + alignment.lengthOnRef)) / 2;
-            left = alignment.chr + ':' + Math.round(centroid - widthBP/2.0).toString() + '-' + Math.round(centroid + widthBP/2.0).toString();
-
-            centroid = (alignment.mate.position + (alignment.mate.position + alignment.lengthOnRef)) / 2;
-            right = alignment.chr + ':' + Math.round(centroid - widthBP/2.0).toString() + '-' + Math.round(centroid + widthBP/2.0).toString();
-
-            return [ left, right ];
-        }
-    };
-
-    AlignmentTrack.prototype.getClickedAlignment = function (viewport, genomicLocation) {
-
-        var packedAlignmentRows,
-            row,
-            index,
-            clicked;
-
-        packedAlignmentRows = viewport.drawConfiguration.features.packedAlignmentRows;
-
-        clicked = undefined;
-        _.each(packedAlignmentRows, function (row) {
-
-            if (undefined === clicked) {
-                clicked = _.filter(row.alignments, function(alignment) {
-                    return (alignment.isPaired() && alignment.isMateMapped() && alignment.start <= genomicLocation && (alignment.start + alignment.lengthOnRef >= genomicLocation));
-                });
-            } // if (undefined === clicked)
-
-        });
-
-        return clicked ? _.first(clicked) : undefined;
-    };
-
-    function getAlignmentColor(alignment) {
-
-        var alignmentTrack = this,
-            option = alignmentTrack.colorBy,
-            tagValue, color,
-            strand;
-
-        color = alignmentTrack.parent.color;
-
-        switch (option) {
-
+        switch (this.colorBy) {
             case "strand":
-                color = alignment.strand ? alignmentTrack.posStrandColor : alignmentTrack.negStrandColor;
+            case "firstOfPairStrand":
+            case "pairOrientation":
+            case "tag":
+                return this.parent.color || DEFAULT_CONNECTOR_COLOR
+            default:
+                return this.getAlignmentColor(alignment)
+
+        }
+    }
+
+    getAlignmentColor(alignment) {
+
+        let color = this.parent.color || DEFAULT_ALIGNMENT_COLOR;   // The default color if nothing else applies
+        const option = this.colorBy;
+        switch (option) {
+            case "strand":
+                color = alignment.strand ? this.posStrandColor : this.negStrandColor;
                 break;
 
             case "firstOfPairStrand":
-                if(alignment instanceof igv.PairedAlignment) {
-                    color = alignment.firstOfPairStrand() ? alignmentTrack.posStrandColor : alignmentTrack.negStrandColor;
-                }
-                else if (alignment.isPaired()) {
+
+                if (alignment instanceof PairedAlignment) {
+                    color = alignment.firstOfPairStrand() ? this.posStrandColor : this.negStrandColor;
+                } else if (alignment.isPaired()) {
 
                     if (alignment.isFirstOfPair()) {
-                        color = alignment.strand ? alignmentTrack.posStrandColor : alignmentTrack.negStrandColor;
-                    }
-                    else if (alignment.isSecondOfPair()) {
-                        color = alignment.strand ? alignmentTrack.negStrandColor : alignmentTrack.posStrandColor;
-                    }
-                    else {
-                        console.log("ERROR. Paired alignments are either first or second.")
+                        color = alignment.strand ? this.posStrandColor : this.negStrandColor;
+                    } else if (alignment.isSecondOfPair()) {
+                        color = alignment.strand ? this.negStrandColor : this.posStrandColor;
+                    } else {
+                        console.error("ERROR. Paired alignments are either first or second.")
                     }
                 }
                 break;
 
-            case "tag":
-                tagValue = alignment.tags()[alignmentTrack.colorByTag];
-                if (tagValue !== undefined) {
+            case "pairOrientation":
 
-                    if (alignmentTrack.bamColorTag === alignmentTrack.colorByTag) {
+                if (alignment.mate && alignment.isMateMapped() && alignment.mate.chr !== alignment.chr) {
+                    color = getChrColor(alignment.mate.chr);
+                } else if (this.pairOrientation && alignment.pairOrientation) {
+                    var oTypes = orientationTypes[this.pairOrientation];
+                    if (oTypes) {
+                        var pairColor = this.pairColors[oTypes[alignment.pairOrientation]];
+                        if (pairColor) color = pairColor;
+                    }
+                }
+
+                break;
+
+            case "fragmentLength":
+
+                if (alignment.mate && alignment.isMateMapped() && alignment.mate.chr !== alignment.chr) {
+                    color = getChrColor(alignment.mate.chr);
+                } else if (this.parent.minFragmentLength && Math.abs(alignment.fragmentLength) < this.parent.minFragmentLength) {
+                    color = this.smallFragmentLengthColor;
+                } else if (this.parent.maxFragmentLength && Math.abs(alignment.fragmentLength) > this.parent.maxFragmentLength) {
+                    color = this.largeFragmentLengthColor;
+                }
+
+                break;
+
+            case "tag":
+                const tagValue = alignment.tags()[this.colorByTag];
+                if (tagValue !== undefined) {
+                    if (this.bamColorTag === this.colorByTag) {
                         // UCSC style color option
                         color = "rgb(" + tagValue + ")";
-                    }
-                    else {
-                        color = alignmentTrack.tagColors.getColor(tagValue);
+                    } else {
+
+                        if (!this.tagColors) {
+                            this.tagColors = new PaletteColorTable("Set1");
+                        }
+                        color = this.tagColors.getColor(tagValue);
                     }
                 }
                 break;
 
             default:
-                color = alignmentTrack.parent.color;
+                color = this.parent.color || DEFAULT_ALIGNMENT_COLOR;
         }
 
         return color;
 
     }
+}
 
-    return igv;
+function sortAlignmentRows(options, alignmentContainer) {
 
-})
-(igv || {});
+    const direction = options.direction
+
+    for (let row of alignmentContainer.packedAlignmentRows) {
+        row.updateScore(options, alignmentContainer);
+    }
+
+    alignmentContainer.packedAlignmentRows.sort(function (rowA, rowB) {
+        const i = rowA.score > rowB.score ? 1 : (rowA.score < rowB.score ? -1 : 0)
+        return true === direction ? i : -i;
+    });
+
+    // For debugging
+    // for(let r of alignmentContainer.packedAlignmentRows) {
+    //     console.log(r.score);
+    // }
+
+}
+
+function shadedBaseColor(qual, baseColor) {
+
+    const minQ = 5;   //prefs.getAsInt(PreferenceManager.SAM_BASE_QUALITY_MIN),
+    const maxQ = 20;  //prefs.getAsInt(PreferenceManager.SAM_BASE_QUALITY_MAX);
+
+    let alpha;
+    if (qual < minQ) {
+        alpha = 0.1;
+    } else {
+        alpha = Math.max(0.1, Math.min(1.0, 0.1 + 0.9 * (qual - minQ) / (maxQ - minQ)));
+    }
+    // Round alpha to nearest 0.1
+    alpha = Math.round(alpha * 10) / 10.0;
+
+    if (alpha < 1) {
+        baseColor = IGVColor.addAlpha(baseColor, alpha);
+    }
+    return baseColor;
+}
+
+const orientationTypes = {
+
+    "fr": {
+        "F1R2": "LR",
+        "F2R1": "LR",
+        "F1F2": "LL",
+        "F2F1": "LL",
+        "R1R2": "RR",
+        "R2R1": "RR",
+        "R1F2": "RL",
+        "R2F1": "RL"
+    },
+
+    "rf": {
+        "R1F2": "LR",
+        "R2F1": "LR",
+        "R1R2": "LL",
+        "R2R1": "LL",
+        "F1F2": "RR",
+        "F2F1": "RR",
+        "F1R2": "RL",
+        "F2R1": "RL"
+    },
+
+    "ff": {
+        "F2F1": "LR",
+        "R1R2": "LR",
+        "F2R1": "LL",
+        "R1F2": "LL",
+        "R2F1": "RR",
+        "F1R2": "RR",
+        "R2R1": "RL",
+        "F1F2": "RL"
+    }
+}
+
+function getChrColor(chr) {
+    if (chrColorMap[chr]) {
+        return chrColorMap[chr];
+    } else if (chrColorMap["chr" + chr]) {
+        const color = chrColorMap["chr" + chr];
+        chrColorMap[chr] = color;
+        return color;
+    } else {
+        const color = IGVColor.randomRGB();
+        chrColorMap[chr] = color;
+        return color;
+    }
+}
+
+const chrColorMap = {
+    "chrX": "rgb(204, 153, 0)",
+    "chrY": "rgb(153, 204, 0",
+    "chrUn": "rgb(50, 50, 50)",
+    "chr1": "rgb(80, 80, 255)",
+    "chrI": "rgb(139, 155, 187)",
+    "chr2": "rgb(206, 61, 50)",
+    "chrII": "rgb(206, 61, 50)",
+    "chr2a": "rgb(216, 71, 60)",
+    "chr2b": "rgb(226, 81, 70)",
+    "chr3": "rgb(116, 155, 88)",
+    "chrIII": "rgb(116, 155, 88)",
+    "chr4": "rgb(240, 230, 133)",
+    "chrIV": "rgb(240, 230, 133)",
+    "chr5": "rgb(70, 105, 131)",
+    "chr6": "rgb(186, 99, 56)",
+    "chr7": "rgb(93, 177, 221)",
+    "chr8": "rgb(128, 34, 104)",
+    "chr9": "rgb(107, 215, 107)",
+    "chr10": "rgb(213, 149, 167)",
+    "chr11": "rgb(146, 72, 34)",
+    "chr12": "rgb(131, 123, 141)",
+    "chr13": "rgb(199, 81, 39)",
+    "chr14": "rgb(213, 143, 92)",
+    "chr15": "rgb(122, 101, 165)",
+    "chr16": "rgb(228, 175, 105)",
+    "chr17": "rgb(59, 27, 83)",
+    "chr18": "rgb(205, 222, 183)",
+    "chr19": "rgb(97, 42, 121)",
+    "chr20": "rgb(174, 31, 99)",
+    "chr21": "rgb(231, 199, 111)",
+    "chr22": "rgb(90, 101, 94)",
+    "chr23": "rgb(204, 153, 0)",
+    "chr24": "rgb(153, 204, 0)",
+    "chr25": "rgb(51, 204, 0)",
+    "chr26": "rgb(0, 204, 51)",
+    "chr27": "rgb(0, 204, 153)",
+    "chr28": "rgb(0, 153, 204)",
+    "chr29": "rgb(10, 71, 255)",
+    "chr30": "rgb(71, 117, 255)",
+    "chr31": "rgb(255, 194, 10)",
+    "chr32": "rgb(255, 209, 71)",
+    "chr33": "rgb(153, 0, 51)",
+    "chr34": "rgb(153, 26, 0)",
+    "chr35": "rgb(153, 102, 0)",
+    "chr36": "rgb(128, 153, 0)",
+    "chr37": "rgb(51, 153, 0)",
+    "chr38": "rgb(0, 153, 26)",
+    "chr39": "rgb(0, 153, 102)",
+    "chr40": "rgb(0, 128, 153)",
+    "chr41": "rgb(0, 51, 153)",
+    "chr42": "rgb(26, 0, 153)",
+    "chr43": "rgb(102, 0, 153)",
+    "chr44": "rgb(153, 0, 128)",
+    "chr45": "rgb(214, 0, 71)",
+    "chr46": "rgb(255, 20, 99)",
+    "chr47": "rgb(0, 214, 143)",
+    "chr48": "rgb(20, 255, 177)",
+}
+
+export default BAMTrack;

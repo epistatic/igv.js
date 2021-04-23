@@ -23,240 +23,240 @@
  * THE SOFTWARE.
  */
 
-var igv = (function (igv) {
+import IGVGraphics from "./igv-canvas.js";
+import {IGVColor, StringUtils} from "../node_modules/igv-utils/src/index.js";
+import GenomeUtils from "./genome/genome.js";
 
-    //
-    igv.RulerTrack = function () {
+const numberFormatter = StringUtils.numberFormatter;
 
-        this.height = 50;
-        // this.height = 24;
+class RulerTrack {
+    constructor(browser) {
+
+        this.browser = browser;
+        this.height = 40;
         this.name = "";
         this.id = "ruler";
         this.disableButtons = true;
         this.ignoreTrackMenu = true;
-        this.order = -Number.MAX_VALUE;
-        this.supportsWholeGenome = false;
-        
-    };
-
-    igv.RulerTrack.prototype.locusLabelWithViewport = function (viewport) {
-
-        var locusLabel = $('<div class = "igv-viewport-content-ruler-div">');
-
-        locusLabel.text(viewport.genomicState.locusSearchString);
-
-        locusLabel.click(function (e) {
-
-            var genomicState = viewport.genomicState,
-                initialReferenceFrame = genomicState.initialReferenceFrame;
-
-            genomicState.referenceFrame = new igv.ReferenceFrame(initialReferenceFrame.chrName, initialReferenceFrame.start, initialReferenceFrame.bpPerPixel);
-
-            // igv.browser.updateWithLocusIndex(genomicState.locusIndex);
-            igv.browser.selectMultiLocusPanelWithGenomicState(genomicState);
-        });
-
-        return locusLabel;
-    };
-
-    igv.RulerTrack.prototype.getFeatures = function (chr, bpStart, bpEnd) {
-
-        return new Promise(function (fulfill, reject) {
-            fulfill([]);
-        });
-    };
-
-    igv.RulerTrack.prototype.draw = function (options) {
-
-        var ts,
-            spacing,
-            nTick,
-            x,
-            l,
-            yShim,
-            tickHeight,
-            bpPerPixel;
-
-        if (options.referenceFrame.chrName === "all") {
-            drawAll.call(this);
-        } else {
-            updateLocusLabelWithGenomicState(options.genomicState);
-
-            bpPerPixel = options.referenceFrame.bpPerPixel;
-            ts = findSpacing( Math.floor(options.viewportWidth * bpPerPixel) );
-            spacing = ts.majorTick;
-
-            // Find starting point closest to the current origin
-            nTick = Math.floor(options.bpStart / spacing) - 1;
-            x = 0;
-
-            while (x < options.pixelWidth) {
-
-                l = Math.floor(nTick * spacing);
-                yShim = 2;
-                tickHeight = 6;
-
-                x = Math.round(((l - 1) - options.bpStart + 0.5) / bpPerPixel);
-                var chrPosition = formatNumber(l / ts.unitMultiplier, 0) + " " + ts.majorUnit;
-
-                if (nTick % 1 == 0) {
-                    igv.graphics.fillText(options.context, chrPosition, x, this.height - (tickHeight / 0.75));
-                }
-
-                igv.graphics.strokeLine(options.context, x, this.height - tickHeight, x, this.height - yShim);
-
-                nTick++;
-            }
-            igv.graphics.strokeLine(options.context, 0, this.height - yShim, options.pixelWidth, this.height - yShim);
-
-        }
-
-        function updateLocusLabelWithGenomicState(genomicState) {
-            var $e,
-                viewports;
-
-            $e = options.viewport.$viewport.find('.igv-viewport-content-ruler-div');
-            $e.text(genomicState.locusSearchString);
-
-            // viewports = _.filter(igv.Viewport.viewportsWithLocusIndex(genomicState.locusIndex), function(viewport){
-            //     return (viewport.trackView.track instanceof igv.RulerTrack);
-            // });
-            //
-            // if (1 === _.size(viewports)) {
-            //     $e = _.first(viewports).$viewport.find('.igv-viewport-content-ruler-div');
-            //     $e.text( genomicState.locusSearchString );
-            // }
-
-        }
-
-        function formatNumber(anynum, decimal) {
-            //decimal  - the number of decimals after the digit from 0 to 3
-            //-- Returns the passed number as a string in the xxx,xxx.xx format.
-            //anynum = eval(obj.value);
-            var divider = 10;
-            switch (decimal) {
-                case 0:
-                    divider = 1;
-                    break;
-                case 1:
-                    divider = 10;
-                    break;
-                case 2:
-                    divider = 100;
-                    break;
-                default:       //for 3 decimal places
-                    divider = 1000;
-            }
-
-            var workNum = Math.abs((Math.round(anynum * divider) / divider));
-
-            var workStr = "" + workNum
-
-            if (workStr.indexOf(".") == -1) {
-                workStr += "."
-            }
-
-            var dStr = workStr.substr(0, workStr.indexOf("."));
-            var dNum = dStr - 0
-            var pStr = workStr.substr(workStr.indexOf("."))
-
-            while (pStr.length - 1 < decimal) {
-                pStr += "0"
-            }
-
-            if (pStr == '.') pStr = '';
-
-            //--- Adds a comma in the thousands place.
-            if (dNum >= 1000) {
-                var dLen = dStr.length
-                dStr = parseInt("" + (dNum / 1000)) + "," + dStr.substring(dLen - 3, dLen)
-            }
-
-            //-- Adds a comma in the millions place.
-            if (dNum >= 1000000) {
-                dLen = dStr.length
-                dStr = parseInt("" + (dNum / 1000000)) + "," + dStr.substring(dLen - 7, dLen)
-            }
-            var retval = dStr + pStr
-            //-- Put numbers in parentheses if negative.
-            if (anynum < 0) {
-                retval = "(" + retval + ")";
-            }
-
-            //You could include a dollar sign in the return value.
-            //retval =  "$"+retval
-            return retval;
-        }
-
-
-        function drawAll() {
-
-            var self = this,
-                lastX = 0,
-                yShim = 2,
-                tickHeight = 10;
-
-            _.each(igv.browser.genome.wgChromosomeNames, function (chrName) {
-
-                var chromosome = igv.browser.genome.getChromosome(chrName),
-                    bp = igv.browser.genome.getGenomeCoordinate(chrName, chromosome.bpLength),
-                    x = Math.round((bp - options.bpStart ) / bpPerPixel),
-                    chrLabel = chrName.startsWith("chr") ? chrName.substr(3) : chrName;
-
-                options.context.textAlign = 'center';
-                igv.graphics.strokeLine(options.context, x, self.height - tickHeight, x, self.height - yShim);
-                igv.graphics.fillText(options.context, chrLabel, (lastX + x) / 2, self.height - (tickHeight / 0.75));
-
-                lastX = x;
-
-            })
-            igv.graphics.strokeLine(options.context, 0, self.height - yShim, options.pixelWidth, self.height - yShim);
-        }
-
-    };
-
-
-    function TickSpacing(majorTick, majorUnit, unitMultiplier) {
-        this.majorTick = majorTick;
-        this.majorUnit = majorUnit;
-        this.unitMultiplier = unitMultiplier;
+        this.order = Number.MIN_SAFE_INTEGER * 1e-2;
+        this.removable = false;
+        this.type = 'ruler';
     }
 
-    function findSpacing(maxValue) {
+    updateLocusLabel() {
 
-        if (maxValue < 10) {
-            return new TickSpacing(1, "", 1);
+        for (let viewport of this.trackView.viewports) {
+            viewport.updateLocusLabel()
         }
 
+    };
 
-        // Now man zeroes?
-        var nZeroes = Math.floor(log10(maxValue));
-        var majorUnit = "";
-        var unitMultiplier = 1;
-        if (nZeroes > 9) {
-            majorUnit = "gb";
-            unitMultiplier = 1000000000;
-        }
-        if (nZeroes > 6) {
-            majorUnit = "mb";
-            unitMultiplier = 1000000;
-        } else if (nZeroes > 3) {
-            majorUnit = "kb";
-            unitMultiplier = 1000;
-        }
+    async getFeatures(chr, start, end) {
+        return [];
+    };
 
-        var nMajorTicks = maxValue / Math.pow(10, nZeroes - 1);
-        if (nMajorTicks < 25) {
-            return new TickSpacing(Math.pow(10, nZeroes - 1), majorUnit, unitMultiplier);
+    computePixelHeight(ignore) {
+        return this.height;
+    };
+
+    draw(options) {
+
+        if (GenomeUtils.isWholeGenomeView(options.referenceFrame.chr)) {
+
+            options.viewport.rulerSweeper.disableMouseHandlers();
+
+            this.drawWholeGenome(options);
+
         } else {
-            return new TickSpacing(Math.pow(10, nZeroes) / 2, majorUnit, unitMultiplier);
-        }
 
-        function log10(x) {
-            var dn = Math.log(10);
-            return Math.log(x) / dn;
+            options.viewport.rulerSweeper.addMouseHandlers();
+
+            const tickHeight = 6;
+            const shim = 2;
+            const pixelWidthBP = 1 + Math.floor(options.referenceFrame.toBP(options.pixelWidth));
+            const tick = new Tick(pixelWidthBP, options);
+
+            tick.drawTicks(options, tickHeight, shim, this.height);
+            IGVGraphics.strokeLine(options.context, 0, this.height - shim, options.pixelWidth, this.height - shim);
+
         }
     }
 
-    return igv;
-})(igv || {});
+
+    drawWholeGenome(options) {
+
+        options.context.save();
+
+        IGVGraphics.fillRect(options.context, 0, 0, options.pixelWidth, options.pixelHeight, {'fillStyle': 'white'});
+
+        let y = 0;
+        let h = options.pixelHeight;
+
+        for (let name of this.browser.genome.wgChromosomeNames) {
+
+            let xBP = this.browser.genome.getCumulativeOffset(name);
+            let wBP = this.browser.genome.getChromosome(name).bpLength;
+
+            let x = Math.round(xBP / options.bpPerPixel);
+            let w = Math.round(wBP / options.bpPerPixel);
+
+            this.renderChromosomeRect(options.context, x, y, w, h, name);
+        }
+
+        options.context.restore();
+
+    }
+
+    renderChromosomeRect(ctx, x, y, w, h, name) {
+
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = '12px sans-serif';
+
+        // IGVGraphics.fillRect(ctx, x, y, w, h, { 'fillStyle' : toggleColor(this.browser.genome.wgChromosomeNames.indexOf(name)) });
+
+        IGVGraphics.strokeLine(ctx, x + w, y, x + w, y + h, {strokeStyle: IGVColor.greyScale(191)});
+
+        const shortName = (name.startsWith("chr")) ? name.substring(3) : name;
+
+        if (w > ctx.measureText(shortName).width) {
+            IGVGraphics.fillText(ctx, shortName, (x + (w / 2)), (y + (h / 2)), {fillStyle: IGVColor.greyScale(68)});
+        }
+    }
+
+    supportsWholeGenome() {
+        return true;
+    };
+
+    dispose() {
+        // do stuff
+    }
+}
+
+function toggleColor(value) {
+    return 0 === value % 2 ? 'rgb(250,250,250)' : 'rgb(255,255,255)';
+}
+
+
+class Tick {
+    constructor(pixelWidthBP, options) {
+
+        initialize.call(this, pixelWidthBP, options);
+
+        function initialize(pixelWidthBP, options) {
+
+            var numberOfZeroes,
+                majorUnit,
+                unitMultiplier,
+                numberOfMajorTicks,
+                str;
+
+            const isSVGContext = options.context.isSVG || false;
+
+            if (pixelWidthBP < 10) {
+                set.call(this, 1, "bp", 1, isSVGContext);
+            }
+
+            numberOfZeroes = Math.floor(Math.log10(pixelWidthBP));
+
+            if (numberOfZeroes > 9) {
+                majorUnit = "gb";
+                unitMultiplier = 1e9;
+            } else if (numberOfZeroes > 6) {
+                majorUnit = "mb";
+                unitMultiplier = 1e6;
+            } else if (numberOfZeroes > 3) {
+                majorUnit = "kb";
+                unitMultiplier = 1e3;
+            } else {
+                majorUnit = "bp";
+                unitMultiplier = 1;
+            }
+
+            str = numberFormatter(Math.floor(pixelWidthBP / unitMultiplier)) + " " + majorUnit;
+            this.labelWidthBP = Math.round(options.referenceFrame.toBP(options.context.measureText(str).width));
+
+            numberOfMajorTicks = pixelWidthBP / Math.pow(10, numberOfZeroes - 1);
+
+            if (numberOfMajorTicks < 25) {
+                set.call(this, Math.pow(10, numberOfZeroes - 1), majorUnit, unitMultiplier, isSVGContext);
+            } else {
+                set.call(this, Math.pow(10, numberOfZeroes) / 2, majorUnit, unitMultiplier, isSVGContext);
+            }
+
+        }
+
+        function set(majorTick, majorUnit, unitMultiplier, isSVGContext) {
+
+            // reduce label frequency by half for SVG rendering
+            this.majorTick = true === isSVGContext ? 2 * majorTick : majorTick;
+            this.majorUnit = majorUnit;
+
+            this.halfTick = majorTick / 2;
+
+            this.unitMultiplier = unitMultiplier;
+        }
+    }
+
+    drawTicks(options, tickHeight, shim, height) {
+
+        var numberOfTicks,
+            bp,
+            pixel,
+            label,
+            labelWidth,
+            labelX,
+            numer,
+            floored;
+
+
+        numberOfTicks = Math.floor(options.bpStart / this.majorTick) - 1;
+        labelWidth = 0;
+        labelX = 0;
+        pixel = 0;
+        while (pixel < options.pixelWidth) {
+
+            bp = Math.floor(numberOfTicks * this.majorTick);
+            pixel = Math.round(options.referenceFrame.toPixels((bp - 1) - options.bpStart + 0.5));
+
+            label = numberFormatter(Math.floor(bp / this.unitMultiplier)) + " " + this.majorUnit;
+            labelWidth = options.context.measureText(label).width;
+
+            labelX = Math.round(pixel - labelWidth / 2);
+
+            IGVGraphics.fillText(options.context, label, labelX, height - (tickHeight / 0.75));
+            IGVGraphics.strokeLine(options.context, pixel, height - tickHeight, pixel, height - shim);
+
+            ++numberOfTicks;
+        }
+
+        numberOfTicks = Math.floor(options.bpStart / this.halfTick) - 1;
+        pixel = 0;
+        while (pixel < options.pixelWidth) {
+
+            bp = Math.floor(numberOfTicks * this.halfTick);
+            pixel = Math.round(options.referenceFrame.toPixels((bp - 1) - options.bpStart + 0.5));
+            numer = bp / this.unitMultiplier;
+            floored = Math.floor(numer);
+
+            if (numer === floored && (this.majorTick / this.labelWidthBP) > 8) {
+                label = numberFormatter(Math.floor(numer)) + " " + this.majorUnit;
+                labelWidth = options.context.measureText(label).width;
+                labelX = pixel - labelWidth / 2;
+                IGVGraphics.fillText(options.context, label, labelX, height - (tickHeight / 0.75));
+            }
+
+            IGVGraphics.strokeLine(options.context, pixel, height - tickHeight, pixel, height - shim);
+
+            ++numberOfTicks;
+        }
+
+
+    };
+
+    description(blurb) {
+        console.log((blurb || '') + ' tick ' + numberFormatter(this.majorTick) + ' label width ' + numberFormatter(this.labelWidthBP) + ' multiplier ' + this.unitMultiplier);
+    }
+}
+
+export default RulerTrack;

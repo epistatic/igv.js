@@ -23,57 +23,63 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+import {igvxhr, StringUtils} from "../../node_modules/igv-utils/src/index.js";
 
-/**
- * Created by jrobinso on 10/10/16.
- */
-
-
-var igv = (function (igv) {
+const isString = StringUtils.isString;
 
 
-    igv.CustomServiceReader = function (config) {
+class CustomServiceReader {
+    constructor(config) {
         this.config = config;
-        
-        this.supportsWholeGenome = true;
     }
 
-    igv.CustomServiceReader.prototype.readFeatures = function (chr, start, end) {
+    async readFeatures(chr, start, end) {
 
+        let url;
+        if (typeof this.config.url === 'function') {
+            url = this.config.url({chr, start, end});
+        } else {
+            url = this.config.url
+                .replace("$CHR", chr)
+                .replace("$START", start)
+                .replace("$END", end);
+        }
 
-        var self = this;
-
-        return new Promise(function (fulfill, reject) {
-
-            var url = self.config.url,
-                body = self.config.body;
-
-            if(body !== undefined && chr !== "all") {
-                self.config.body = self.config.body.replace("$CHR", chr);
+        let config = Object.assign({}, this.config);
+        if (this.config.body !== undefined) {
+            if (typeof this.config.body === 'function') {
+                config.body = this.config.body({chr, start, end});
+            } else {
+                config.body =
+                    this.config.body
+                        .replace("$CHR", chr)
+                        .replace("$START", start)
+                        .replace("$END", end);
             }
+        }
 
-            igvxhr.load(url, self.config).then(function (data) {
 
-                if (data) {
-
-                    var results = (typeof self.config.parser === "function") ? self.config.parser(data) : data;
-
-                    fulfill(results);
-
+        let features;
+        const data = await igvxhr.load(url, config)
+        if (data) {
+            if (typeof this.config.parser === "function") {
+                features = this.config.parser(data);
+            } else if (isString(data)) {
+                    features = JSON.parse(data);
+            } else {
+                features = data;
+            }
+        }
+        if (this.config.mappings) {
+            let mappingKeys = Object.keys(this.config.mappings);
+            for (let f of features) {
+                for (let key of mappingKeys) {
+                    f[key] = f[this.config.mappings[key]];
                 }
-                else {
-                    fulfill(null);
-                }
-
-            }).catch(function (error) {
-                reject(error);
-            });
-
-        });
+            }
+        }
+        return features;
     }
+}
 
-
-
-    return igv;
-
-})(igv || {});
+export default CustomServiceReader

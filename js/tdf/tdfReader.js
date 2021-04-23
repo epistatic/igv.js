@@ -24,436 +24,426 @@
  * THE SOFTWARE.
  */
 
-/**
- * Created by jrobinso on 11/22/2016.
- */
+import BinaryParser from "../binary.js";
+import {igvxhr, Zlib} from "../../node_modules/igv-utils/src/index.js";
+import {buildOptions} from "../util/igvUtils.js";
 
+const GZIP_FLAG = 0x1;
 
-var igv = (function (igv) {
+class TDFReader {
 
-
-    var GZIP_FLAG = 0x1;
-
-    igv.TDFReader = function (config) {
+    constructor(config, genome) {
         this.config = config;
+        this.genome = genome;
         this.path = config.url;
         this.groupCache = {};
-    };
+        this.datasetCache = {};
+    }
 
 
-    igv.TDFReader.prototype.readHeader = function () {
-
-        var self = this;
+    async readHeader() {
 
         if (this.magic !== undefined) {
-            return Promise.resolve(this);   // Already read
+            return this;   // Already read
         }
 
-        return new Promise(function (fulfill, reject) {
-
-            igvxhr.loadArrayBuffer(self.path, igv.buildOptions(self.config, {range: {start: 0, size: 64000}}))
-                .then(function (data) {
-
-                if (!data) {
-                    reject("no data");
-                    return;
-                }
-
-                var binaryParser = new igv.BinaryParser(new DataView(data));
-
-                self.magic = binaryParser.getInt();
-                self.version = binaryParser.getInt();
-                self.indexPos = binaryParser.getLong();
-                self.indexSize = binaryParser.getInt();
-                var headerSize = binaryParser.getInt();
+        let data = await igvxhr.loadArrayBuffer(this.path, buildOptions(this.config, {range: {start: 0, size: 64000}}))
+        let binaryParser = new BinaryParser(new DataView(data));
+        this.magic = binaryParser.getInt();
+        this.version = binaryParser.getInt();
+        this.indexPos = binaryParser.getLong();
+        this.indexSize = binaryParser.getInt();
+        const headerSize = binaryParser.getInt();
 
 
-                if (self.version >= 2) {
-                    var nWindowFunctions = binaryParser.getInt();
-                    self.windowFunctions = [];
-                    while (nWindowFunctions-- > 0) {
-                        self.windowFunctions.push(binaryParser.getString());
-                    }
-                }
+        if (this.version >= 2) {
+            let nWindowFunctions = binaryParser.getInt();
+            this.windowFunctions = [];
+            while (nWindowFunctions-- > 0) {
+                this.windowFunctions.push(binaryParser.getString());
+            }
+        }
 
-                self.trackType = binaryParser.getString();
-                self.trackLine = binaryParser.getString();
+        this.trackType = binaryParser.getString();
+        this.trackLine = binaryParser.getString();
 
-                var nTracks = binaryParser.getInt();
-                self.trackNames = [];
-                while (nTracks-- > 0) {
-                    self.trackNames.push(binaryParser.getString());
-                }
+        let nTracks = binaryParser.getInt();
+        this.trackNames = [];
+        while (nTracks-- > 0) {
+            this.trackNames.push(binaryParser.getString());
+        }
+        this.genomeID = binaryParser.getString();
+        this.flags = binaryParser.getInt();
+        this.compressed = (this.flags & GZIP_FLAG) !== 0;
 
-                self.genomeID = binaryParser.getString();
-                self.flags = binaryParser.getInt();
+        // Now read index
+        data = await igvxhr.loadArrayBuffer(this.path, buildOptions(this.config, {
+            range: {
+                start: this.indexPos,
+                size: this.indexSize
+            }
+        }))
+        binaryParser = new BinaryParser(new DataView(data));
+        this.datasetIndex = {};
+        let nEntries = binaryParser.getInt();
+        while (nEntries-- > 0) {
+            const name = binaryParser.getString();
+            const pos = binaryParser.getLong();
+            const size = binaryParser.getInt();
+            this.datasetIndex[name] = {position: pos, size: size};
+        }
 
-                self.compressed = (self.flags & GZIP_FLAG) != 0;
+        this.groupIndex = {};
+        nEntries = binaryParser.getInt();
+        while (nEntries-- > 0) {
+            const name = binaryParser.getString();
+            const pos = binaryParser.getLong();
+            const size = binaryParser.getInt();
+            this.groupIndex[name] = {position: pos, size: size};
+        }
 
-                // Now read index
-                igvxhr.loadArrayBuffer(self.path,igv.buildOptions(self.config, {range: {start: self.indexPos, size: self.indexSize}}))
-                    .then(function (data) {
-
-
-                    if (!data) {
-                        reject("no data");
-                        return;
-                    }
-
-                    binaryParser = new igv.BinaryParser(new DataView(data));
-
-                    self.datasetIndex = {};
-                    var nEntries = binaryParser.getInt();
-                    while (nEntries-- > 0) {
-                        var name = binaryParser.getString();
-                        var pos = binaryParser.getLong();
-                        var size = binaryParser.getInt();
-                        self.datasetIndex[name] = {position: pos, size: size};
-                    }
-
-                    self.groupIndex = {};
-                    nEntries = binaryParser.getInt();
-                    while (nEntries-- > 0) {
-                        name = binaryParser.getString();
-                        pos = binaryParser.getLong();
-                        size = binaryParser.getInt();
-                        self.groupIndex[name] = {position: pos, size: size};
-                    }
-
-                    fulfill(self);
-
-                }).catch(reject);
-
-            }).catch(reject)
-
-        });
+        return this;
     }
 
-    igv.TDFReader.prototype.readDataset = function (chr, windowFunction,  zoom) {
+    async readDataset(chr, windowFunction, zoom) {
 
-        var self = this;
+        const key = chr + "_" + windowFunction + "_" + zoom;
 
-        return new Promise(function (fulfill, reject) {
+        if (this.datasetCache[key]) {
+            return this.datasetCache[key];
 
+        } else {
+            await this.readHeader()
+            const wf = (this.version < 2) ? "" : "/" + windowFunction;
+            const zoomString = (chr.toLowerCase() === "all" || zoom === undefined) ? "0" : zoom.toString();
 
-            self.readHeader().then(function (reader) {
+            let dsName;
+            if (windowFunction === "raw") {
+                dsName = "/" + chr + "/raw";
+            } else {
+                dsName = "/" + chr + "/z" + zoomString + wf;
+            }
+            const indexEntry = this.datasetIndex[dsName];
 
-                var wf = (self.version < 2) ? "" : "/" + windowFunction,
-                    zoomString = (chr === "all" || zoom === undefined) ? "0" : zoom.toString(),
-                    dsName,
-                    indexEntry;
+            if (indexEntry === undefined) {
+                return undefined;
+            }
 
-                if (windowFunction === "raw") {
-                    dsName = "/" + chr + "/raw";
+            const data = await igvxhr.loadArrayBuffer(this.path, buildOptions(this.config, {
+                range: {
+                    start: indexEntry.position,
+                    size: indexEntry.size
                 }
-                else {
-                    dsName = "/" + chr + "/z" + zoomString + wf;
-                }
-                indexEntry = self.datasetIndex[dsName];
+            }));
 
-                if (indexEntry === undefined) {
-                    fulfill(null);
-                }
-                else {
+            if (!data) {
+                return undefined;
+            }
 
+            const binaryParser = new BinaryParser(new DataView(data));
+            let nAttributes = binaryParser.getInt();
+            const attributes = {};
+            while (nAttributes-- > 0) {
+                attributes[binaryParser.getString()] = binaryParser.getString();
+            }
+            const dataType = binaryParser.getString();
+            const tileWidth = binaryParser.getFloat();
+            let nTiles = binaryParser.getInt();
+            const tiles = [];
+            while (nTiles-- > 0) {
+                tiles.push({position: binaryParser.getLong(), size: binaryParser.getInt()});
+            }
 
-                    igvxhr.loadArrayBuffer(self.path, igv.buildOptions(self.config, {range: {start: indexEntry.position, size: indexEntry.size}}))
-                        .then(function (data) {
+            const dataset = {
+                name: dsName,
+                attributes: attributes,
+                dataType: dataType,
+                tileWidth: tileWidth,
+                tiles: tiles
+            }
 
-                        if (!data) {
-                            reject("no data");
-                            return;
-                        }
-
-                        var binaryParser = new igv.BinaryParser(new DataView(data));
-
-                        var nAttributes = binaryParser.getInt();
-                        var attributes = {};
-                        while (nAttributes-- > 0) {
-                            attributes[binaryParser.getString()] = binaryParser.getString();
-                        }
-
-                        var dataType = binaryParser.getString();
-                        var tileWidth = binaryParser.getFloat();
-
-                        var nTiles = binaryParser.getInt();
-                        var tiles = [];
-                        while (nTiles-- > 0) {
-                            tiles.push({position: binaryParser.getLong(), size: binaryParser.getInt()});
-                        }
-
-                        var dataset = {
-                            name: dsName,
-                            attributes: attributes,
-                            dataType: dataType,
-                            tileWidth: tileWidth,
-                            tiles: tiles
-                        };
-
-                        fulfill(dataset);
-
-                    }).catch(reject);
-                }
-            }).catch(reject);
-        });
+            this.datasetCache[key] = dataset;
+            return dataset;
+        }
     }
 
-    igv.TDFReader.prototype.readRootGroup = function () {
+    async readRootGroup() {
 
-        var self = this,
-            rootGroup = this.groupCache["/"];
-
+        const genome = this.genome;
+        const rootGroup = this.groupCache["/"];
         if (rootGroup) {
-            return Promise.resolve(rootGroup);
-        }
-        else {
-            return new Promise(function (fulfill, reject) {
+            return rootGroup;
+        } else {
 
-                self.readGroup("/").then(function (group) {
+            const group = await this.readGroup("/");
+            const names = group["chromosomes"];
+            const maxZoomString = group["maxZoom"];
 
-                    var genome = igv.browser.genome,
-                        names = group["chromosomes"],
-                        maxZoomString = group["maxZoom"];
+            // Now parse out interesting attributes.
+            if (maxZoomString) {
+                this.maxZoom = Number(maxZoomString);
+            }
 
-                    // Now parse out interesting attributes.  This is a side effect, and bad bad bad,  but the alternative is messy as well.
-                    if(maxZoomString) {
-                        self.maxZoom = Number(maxZoomString);
-                    }
+            const totalCountString = group["totalCount"];
+            if(totalCountString) {
+                group.totalCount = Number.parseFloat(totalCountString);
+            }
 
-                    // Chromosome names
-                    self.chrNameMap = {};
-                    if(names) {
-                        _.each(names.split(","), function (chr) {
-                            var canonicalName = genome.getChromosomeName(chr);
-                            self.chrNameMap[canonicalName] = chr;
-                        })
-                    }
+            // Chromosome names
+            const chrAliasTable = {};
+            if (names) {
+                names.split(",").forEach(function (chr) {
+                    const canonicalName = genome.getChromosomeName(chr);
+                    chrAliasTable[canonicalName] = chr;
+                })
+            }
+            this.chrAliasTable = chrAliasTable;
 
-                    fulfill(group);
-
-
-                }).catch(reject);
-            });
-
+            this.groupCache["/"] = group;
+            return group;
         }
     }
 
-    igv.TDFReader.prototype.readGroup = function (name) {
+    async readGroup(name) {
 
-        var self = this;
+        const group = this.groupCache[name];
+        if (group) {
+            return group;
+        } else {
 
-        return new Promise(function (fulfill, reject) {
+            await this.readHeader()
+            const indexEntry = this.groupIndex[name];
+            if (indexEntry === undefined) {
+                return undefined;
+            }
 
-
-            self.readHeader().then(function (reader) {
-
-                var group = self.groupCache[name],
-                    indexEntry = self.groupIndex[name];
-
-                if (group) {
-                    fulfill(group);
+            const data = await igvxhr.loadArrayBuffer(this.path, buildOptions(this.config, {
+                range: {
+                    start: indexEntry.position,
+                    size: indexEntry.size
                 }
-                else if (indexEntry === undefined) {
-                    return fulfill(null);
-                }
-                else {
+            }))
+
+            if (!data) {
+                return undefined;
+            }
+
+            const binaryParser = new BinaryParser(new DataView(data));
+            const group = {name: name};
+            let nAttributes = binaryParser.getInt();
+            while (nAttributes-- > 0) {
+                const key = binaryParser.getString();
+                const value = binaryParser.getString();
+                group[key] = value;
+            }
+            this.groupCache[name] = group;
+            return group;
+        }
+    }
 
 
-                    igvxhr.loadArrayBuffer(self.path, igv.buildOptions(self.config, {range: {start: indexEntry.position, size: indexEntry.size}}))
-                        .then(function (data) {
+    async readTiles(tileIndeces, nTracks) {
 
-                        if (!data) {
-                            reject("no data");
-                            return;
-                        }
+        tileIndeces.sort(function (a, b) {
+            return a.position - b.position;
+        })
 
-                        var binaryParser = new igv.BinaryParser(new DataView(data));
-
-                        var nAttributes = binaryParser.getInt();
-                        var group = {name: name};
-                        while (nAttributes-- > 0) {
-                            group[binaryParser.getString()] = binaryParser.getString();
-                        }
-
-                        self.groupCache[name] = group;
-
-                        fulfill(group);
-
-                    }).catch(reject);
-                }
-            }).catch(reject);
+        tileIndeces = tileIndeces.filter(function (idx) {
+            return idx.size > 0;
         });
-    }
 
+        if (tileIndeces.length === 0) {
+            return Promise.resolve([]);
+        }
 
-
-
-    function createFixedStep(binaryParser, nTracks) {
-        var nPositions = binaryParser.getInt(),
-            start = binaryParser.getInt(),
-            span = binaryParser.getFloat(),
-            np = nPositions,
-            nt = nTracks,
-            data,
-            dtrack;
-
-
-        data = [];
-        while (nt-- > 0) {
-            np = nPositions;
-            dtrack = [];
-            while (np-- > 0) {
-                dtrack.push(binaryParser.getFloat());
+        const firstEntry = tileIndeces[0];
+        const lastEntry = tileIndeces[tileIndeces.length - 1];
+        const position = firstEntry.position;
+        const size = (lastEntry.position + lastEntry.size) - position;
+        const data = await igvxhr.loadArrayBuffer(this.path, buildOptions(this.config, {
+            range: {
+                start: position,
+                size: size
             }
-            data.push(dtrack);
-        }
+        }))
 
-        return {
-            type: "fixedStep",
-            start: start,
-            span: span,
-            data: data,
-            nTracks: nTracks,
-            nPositions: nPositions
-        }
-    }
+        const tiles = [];
 
-    function createVariableStep(binaryParser, nTracks) {
-
-        var tileStart = binaryParser.getInt(),
-            span = binaryParser.getFloat(),
-            nPositions = binaryParser.getInt(),
-            np = nPositions,
-            nt = nTracks,
-            start = [],
-            data,
-            dtrack;
-
-        while (np-- > 0) {
-            start.push(binaryParser.getInt());
-        }
-
-        var nS = binaryParser.getInt();  // # of samples, ignored but should === nTracks
-
-        data = [];
-        while (nt-- > 0) {
-            np = nPositions;
-            dtrack = [];
-            while (np-- > 0) {
-                dtrack.push(binaryParser.getFloat());
-            }
-            data.push(dtrack);
-        }
-
-        return {
-            type: "variableStep",
-            tileStart: tileStart,
-            span: span,
-            start: start,
-            data: data,
-            nTracks: nTracks,
-            nPositions: nPositions
-        }
-    }
-
-    function createBed(binaryParser, nTracks, type) {
-        var nPositions, start, end, nS, data, name, n, nt;
-
-        nPositions = binaryParser.getInt();
-
-        n = nPositions;
-        start = [];
-        while (n-- > 0) {
-            start.push(binaryParser.getInt());
-        }
-
-        n = nPositions;
-        end = [];
-        while (n-- > 0) {
-            end.push(binaryParser.getInt());
-        }
-
-        var nS = binaryParser.getInt();  // # of samples, ignored but should === nTracks
-
-        data = [];
-        nt = nTracks;
-        while (nt-- > 0) {
-            np = nPositions;
-            dtrack = [];
-            while (np-- > 0) {
-                dtrack.push(binaryParser.getFloat());
-            }
-            data.push(dtrack);
-        }
-
-        if (type === "bedWithName") {
-            n = nPositions;
-            name = [];
-            while (n-- > 0) {
-                name.push(binaryParser.getString());
-            }
-        }
-
-        return {
-            type: type,
-            start: start,
-            end: end,
-            data: data,
-            name: name,
-            nTracks: nTracks,
-            nPositions: nPositions
-        }
-
-    }
-
-
-    igv.TDFReader.prototype.readTile = function (indexEntry, nTracks) {
-
-        var self = this;
-
-        return new Promise(function (fulfill, reject) {
-
-            igvxhr.loadArrayBuffer(self.path, igv.buildOptions(self.config, {range: {start: indexEntry.position, size: indexEntry.size}}))
-                .then(function (data) {
-
-                if (!data) {
-                    reject("no data");
-                    return;
+        // Loop through and decode tiles
+        for (let indexEntry of tileIndeces) {
+            const start = indexEntry.position - position;
+            const size = indexEntry.size;
+            if (size > 0) {
+                let tileData;
+                if (this.compressed) {
+                    const inflate = new Zlib.Inflate(new Uint8Array(data, start, size));
+                    const plain = inflate.decompress();
+                    tileData = plain.buffer;
+                } else {
+                    tileData = data.slice(start, start + size);
                 }
 
-                if (self.compressed) {
-                    var inflate = new Zlib.Inflate(new Uint8Array(data));
-                    var plain = inflate.decompress();
-                    data = plain.buffer;
-                }
-
-                var binaryParser = new igv.BinaryParser(new DataView(data));
-
-                var type = binaryParser.getString();
-
+                const binaryParser = new BinaryParser(new DataView(tileData));
+                const type = binaryParser.getString();
+                let tile;
                 switch (type) {
                     case "fixedStep":
-                        fulfill(createFixedStep(binaryParser, nTracks));
+                        tile = createFixedStep(binaryParser, nTracks);
                         break;
                     case "variableStep":
-                        fulfill(createVariableStep(binaryParser, nTracks));
+                        tile = createVariableStep(binaryParser, nTracks);
                         break;
                     case "bed":
                     case "bedWithName":
-                        fulfill(createBed(binaryParser, nTracks, type));
+                        tile = createBed(binaryParser, nTracks, type);
                         break;
                     default:
-                        reject("Unknown tile type: " + type);
+                        throw "Unknown tile type: " + type;
                 }
-
-
-            }).catch(reject);
-
-        });
-
+                tiles.push(tile);
+            }
+        }
+        return tiles;
     }
 
-    return igv;
+    async readTile(indexEntry, nTracks) {
 
-})
-(igv || {});
+        let data = await igvxhr.loadArrayBuffer(this.path, buildOptions(this.config, {
+            range: {
+                start: indexEntry.position,
+                size: indexEntry.size
+            }
+        }))
+
+        if (this.compressed) {
+            const inflate = new Zlib.Inflate(new Uint8Array(data));
+            const plain = inflate.decompress();
+            data = plain.buffer;
+        }
+
+        const binaryParser = new BinaryParser(new DataView(data));
+        const type = binaryParser.getString();
+        switch (type) {
+            case "fixedStep":
+                return createFixedStep(binaryParser, nTracks);
+            case "variableStep":
+                return createVariableStep(binaryParser, nTracks);
+            case "bed":
+            case "bedWithName":
+                return createBed(binaryParser, nTracks, type);
+            default:
+                throw "Unknown tile type: " + type;
+        }
+    }
+
+}
+
+function createFixedStep(binaryParser, nTracks) {
+    const nPositions = binaryParser.getInt();
+    const start = binaryParser.getInt();
+    const span = binaryParser.getFloat();
+
+    const data = [];
+    let nt = nTracks;
+    while (nt-- > 0) {
+        let np = nPositions;
+        const dtrack = [];
+        while (np-- > 0) {
+            dtrack.push(binaryParser.getFloat());
+        }
+        data.push(dtrack);
+    }
+
+    return {
+        type: "fixedStep",
+        start: start,
+        span: span,
+        data: data,
+        nTracks: nTracks,
+        nPositions: nPositions
+    }
+}
+
+function createVariableStep(binaryParser, nTracks) {
+
+    const tileStart = binaryParser.getInt();
+    const span = binaryParser.getFloat();
+    const nPositions = binaryParser.getInt();
+    const start = [];
+
+    let np = nPositions;
+    while (np-- > 0) {
+        start.push(binaryParser.getInt());
+    }
+    const nS = binaryParser.getInt();  // # of samples, ignored but should === nTracks
+
+    const data = [];
+    let nt = nTracks;
+    while (nt-- > 0) {
+        np = nPositions;
+        const dtrack = [];
+        while (np-- > 0) {
+            dtrack.push(binaryParser.getFloat());
+        }
+        data.push(dtrack);
+    }
+
+    return {
+        type: "variableStep",
+        tileStart: tileStart,
+        span: span,
+        start: start,
+        data: data,
+        nTracks: nTracks,
+        nPositions: nPositions
+    }
+}
+
+function createBed(binaryParser, nTracks, type) {
+
+    const nPositions = binaryParser.getInt();
+
+    let n = nPositions;
+    const start = [];
+    while (n-- > 0) {
+        start.push(binaryParser.getInt());
+    }
+
+    n = nPositions;
+    const end = [];
+    while (n-- > 0) {
+        end.push(binaryParser.getInt());
+    }
+
+    const nS = binaryParser.getInt();  // # of samples, ignored but should === nTracks
+    const data = [];
+    let nt = nTracks;
+    while (nt-- > 0) {
+        let np = nPositions;
+        const dtrack = [];
+        while (np-- > 0) {
+            dtrack.push(binaryParser.getFloat());
+        }
+        data.push(dtrack);
+    }
+
+    if (type === "bedWithName") {
+        n = nPositions;
+        const name = [];
+        while (n-- > 0) {
+            name.push(binaryParser.getString());
+        }
+    }
+
+    return {
+        type: type,
+        start: start,
+        end: end,
+        data: data,
+        nTracks: nTracks,
+        nPositions: nPositions
+    }
+
+}
+
+export default TDFReader;

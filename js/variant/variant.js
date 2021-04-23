@@ -23,168 +23,310 @@
  * THE SOFTWARE.
  */
 
-
-/**
- * Parser for VCF files.
- */
-
-var igv = (function (igv) {
+import TrackBase from "../trackBase.js";
+import {StringUtils} from "../../node_modules/igv-utils/src/index.js";
 
 
-    igv.createVCFVariant = function (tokens) {
+const knownAltBases = new Set(["A", "C", "T", "G"].map(c => c.charCodeAt(0)))
 
-        var variant = new igv.Variant();
+function createVCFVariant(tokens) {
+    return new Variant(tokens);
+}
 
-        variant.chr = tokens[0]; // TODO -- use genome aliases
-        variant.pos = parseInt(tokens[1]) - 1;
-        variant.names = tokens[2];    // id in VCF
-        variant.referenceBases = tokens[3];
-        variant.alternateBases = tokens[4];
-        variant.quality = parseInt(tokens[5]);
-        variant.filter = tokens[6];
-        variant.info = tokens[7];
 
-        computeStart(variant);
+class Variant {
 
-        return variant;
-
+    constructor(tokens) {
+        this.chr = tokens[0]; // TODO -- use genome aliases
+        this.pos = parseInt(tokens[1]);
+        this.names = tokens[2];    // id in VCF
+        this.referenceBases = tokens[3];
+        this.alternateBases = tokens[4];
+        this.quality = tokens[5];
+        this.filter = tokens[6];
+        this.info = getInfoObject(tokens[7]);
+        this.init();
     }
 
-    igv.createGAVariant = function (json) {
+    init() {
 
-        var variant = new igv.Variant();
+        const ref = this.referenceBases;
+        const altBases = this.alternateBases;
 
-        variant.chr = json.referenceName;
-        variant.pos = parseInt(json.start);
-        variant.names = arrayToCommaString(json.names);
-        variant.referenceBases = json.referenceBases + '';
-        variant.alternateBases = json.alternateBases + '';
-        variant.quality = json.quality;
-        variant.filter = arrayToCommaString(json.filter);
-        variant.info = json.info;
-
-        // Need to build a hash of calls for fast lookup
-        // Note from the GA4GH spec on call ID:
-        //
-        // The ID of the call set this variant call belongs to. If this field is not present,
-        // the ordering of the call sets from a SearchCallSetsRequest over this GAVariantSet
-        // is guaranteed to match the ordering of the calls on this GAVariant.
-        // The number of results will also be the same.
-        variant.calls = {};
-        var order = 0, id;
-        if(json.calls) {
-            json.calls.forEach(function (call) {
-                id = call.callSetId;
-                variant.calls[id] = call;
-                order++;
-
-            })
+        if (this.info) {
+            if (this.info["VT"]) {
+                this.type = this.info["VT"];
+            } else if (this.info["SVTYPE"]) {
+                this.type = "SV";
+            } else if (this.info["PERIOD"]) {
+                this.type = "STR";
+            }
+        }
+        if (this.type === undefined) {
+            this.type = determineType(ref, altBases);
+        }
+        if (this.type === "NONVARIANT") {
+            this.heterozygosity = 0;
         }
 
-        computeStart(variant);
+        // Determine start/end coordinates -- these are the coordinates representing the actual variant,
+        // not the leading or trailing reference
+        if (this.info["END"]) {
+            this.start = this.pos - 1;
+            if (this.info["CHR2"] && this.info["CHR2"] !== this.chr) {
+                this.end = this.start + 1;
+            } else {
+                this.end = Number.parseInt(this.info["END"]);
+            }
+        } else {
+            if (this.type === "NONVARIANT") {
+                this.start = this.pos - 1;      // convert to 0-based coordinate convention
+                this.end = this.start + ref.length;
+            } else {
 
-        return variant;
+                const altTokens = altBases.split(",").filter(token => token.length > 0);
+                this.alleles = [];
+                this.start = undefined;
+                this.end = undefined;
 
-    }
+                for (let alt of altTokens) {
 
+                    this.alleles.push(alt);
 
-    function computeStart(variant) {
-        //Alleles
-        altTokens = variant.alternateBases.split(",");
+                    // We don't yet handle  SV and other special alt representations
+                    if ("SV" !== this.type && isKnownAlt(alt)) {
 
-        if (altTokens.length > 0) {
+                        let altLength = alt.length;
+                        let lengthOnRef = ref.length;
+                        const lmin = Math.min(altLength, lengthOnRef);
 
-            variant.alleles = [];
-            variant.alleles.push(variant.referenceBases);
+                        // Trim off matching bases.  Try first match, then right -> left,  then any remaining left -> right
+                        let s = 0;
 
-            variant.start = Number.MAX_VALUE;
-            variant.end = 0;
+                        while (s < lmin && (ref.charCodeAt(s) === alt.charCodeAt(s))) {
+                            s++;
+                            altLength--;
+                            lengthOnRef--;
+                        }
 
-            altTokens.forEach(function (alt) {
-                var a, s, e, diff;
+                        // right -> left from end
+                        while (altLength > 0 && lengthOnRef > 0) {
+                            const altIdx = s + altLength - 1;
+                            const refIdx = s + lengthOnRef - 1;
+                            if (alt.charCodeAt(altIdx) === ref.charCodeAt(refIdx)) {
+                                altLength--;
+                                lengthOnRef--;
+                            } else {
+                                break;
+                            }
+                        }
 
-                variant.alleles.push(alt);
+                        // if any remaining, left -> right
+                        while (altLength > 0 && lengthOnRef > 0) {
+                            const altIdx = s;
+                            const refIdx = s;
+                            if (alt.charCodeAt(altIdx) === ref.charCodeAt(refIdx)) {
+                                s++;
+                                altLength--;
+                                lengthOnRef--;
+                            } else {
+                                break;
+                            }
+                        }
 
-                if (alt.length > 0) {
-
-                    diff = variant.referenceBases.length - alt.length;
-
-                    if (diff > 0) {
-                        // deletion, assume left padded
-                        s = variant.pos + alt.length;
-                        e = s + diff;
-                    } else if (diff < 0) {
-                        // Insertion, assume left padded, insertion begins to "right" of last ref base
-                        s = variant.pos + variant.referenceBases.length;
-                        e = s + 1;     // Insertion between s & 3
+                        const alleleStart = this.pos + s - 1;      // -1 for zero based coordinates
+                        const alleleEnd = alleleStart + lengthOnRef;
+                        this.start = this.start === undefined ? alleleStart : Math.min(this.start, alleleStart);
+                        this.end = this.end === undefined ? alleleEnd : Math.max(this.end, alleleEnd);
                     }
-                    else {
-                        // Substitution, SNP if seq.length == 1
-                        s = variant.pos;
-                        e = s + alt.length;
-                    }
-                    // variant.alleles.push({allele: alt, start: s, end: e});
-                    variant.start = Math.min(variant.start, s);
-                    variant.end = Math.max(variant.end, e);
                 }
 
-            });
-        }
-        else {
-            // Is this even legal VCF?  (NO alt alleles)
-            variant.start = variant.pos - 1;
-            variant.end = variant.pos;
+                // Default to single base representation @ position for variant types not otherwise handled
+                if (this.start === undefined) {
+                    this.start = this.pos - 1;
+                    this.end = this.pos;
+                }
+            }
         }
     }
 
 
-    igv.Variant = function () {
+    popupData(genomicLocation, genomeId) {
 
-    }
 
-    igv.Variant.prototype.popupData = function (genomicLocation) {
-
-        var fields, gt,
-            self = this;
-
-        fields = [
+        const posString = `${StringUtils.numberFormatter(this.pos)}`;
+        const locString = this.start === this.end ?
+            `${StringUtils.numberFormatter(this.start)} | ${StringUtils.numberFormatter(this.start + 1)}` :
+            `${StringUtils.numberFormatter(this.start + 1)}-${StringUtils.numberFormatter(this.end)}`;
+        const fields = [
             {name: "Chr", value: this.chr},
-            {name: "Pos", value: (this.pos + 1)},
+            {name: "Pos", value: posString},
+            {name: "Loc", value: locString},
             {name: "Names", value: this.names ? this.names : ""},
             {name: "Ref", value: this.referenceBases},
-            {name: "Alt", value: this.alternateBases},
+            {name: "Alt", value: this.alternateBases.replace("<", "&lt;")},
             {name: "Qual", value: this.quality},
-            {name: "Filter", value: this.filter},
-         ];
+            {name: "Filter", value: this.filter}
+        ];
 
-        if(this.calls && this.calls.length === 1) {
-            gt = this.alleles[this.calls[0].genotype[0]] + this.alleles[this.calls[0].genotype[1]];
-            fields.push({name: "Genotype", value: gt});
+        if ("SNP" === this.type) {
+            let ref = this.referenceBases;
+            if (ref.length === 1) {
+                let altArray = this.alternateBases.split(",");
+                for (let alt of altArray) {
+                    if (alt.length === 1) {
+                        let l = TrackBase.getCravatLink(this.chr, this.pos, ref, alt, genomeId)
+                        if (l) {
+                            fields.push("<hr/>");
+                            fields.push({html: l});
+                        }
+                    }
+                }
+            }
         }
 
-        if(this.info) {
-            fields.push('<HR>');
-            Object.keys(this.info).forEach(function (key) {
-                fields.push({name: key, value: arrayToCommaString(self.info[key])});
-            });
+        if (this.hasOwnProperty("heterozygosity")) {
+            fields.push({name: "Heterozygosity", value: this.heterozygosity});
+        }
+
+        if (this.info) {
+            fields.push({html: '<hr style="border-top: dotted 1px;border-color: #c9c3ba" />'});
+            for (let key of Object.keys(this.info)) {
+                fields.push({name: key, value: arrayToString(decodeURIComponent(this.info[key]))});
+            }
         }
 
         return fields;
 
+    };
+
+    isRefBlock() {
+        return "NONVARIANT" === this.type;
     }
 
+}
 
-    function arrayToCommaString(array) {
-        if (!array) return;
-        var str = '', i;
-        if (array.length > 0)
-            str = array[0];
-        for (i = 1; i < array.length; i++) {
-            str += ", " + array[1];
+function getInfoObject(infoStr) {
+    var info = {};
+    if (infoStr) {
+        infoStr.split(';').forEach(function (elem) {
+            var element = elem.split('=');
+            info[element[0]] = element[1];
+        });
+    }
+    return info;
+}
+
+
+function isKnownAlt(alt) {
+    for (let i = 0; i < alt.length; i++) {
+        if (!knownAltBases.has(alt.charCodeAt(i))) {
+            return false;
         }
-        return str;
+    }
+    return true;
+}
 
+
+function determineType(ref, altAlleles) {
+    const refLength = ref.length;
+    if (altAlleles === undefined) {
+        return "UNKNOWN";
+    } else if (altAlleles.trim().length === 0 ||
+        altAlleles === "<NON_REF>" ||
+        altAlleles === "<*>" ||
+        altAlleles === ".") {
+        return "NONVARIANT";
+    } else {
+        const alleles = altAlleles.split(",");
+        const types = alleles.map(function (a) {
+            if (refLength === 1 && a.length === 1) {
+                return "SNP";
+            } else {
+                return "<NON_REF>" === a ? "NONVARIANT" : "OTHER";
+            }
+        });
+        let type = types[0];
+        for (let t of types) {
+            if (t !== type) {
+                return "MIXED";
+            }
+        }
+        return type;
+    }
+}
+
+function arrayToString(value, delim) {
+
+    if (delim === undefined) delim = ",";
+
+    if (!(Array.isArray(value))) {
+        return value;
+    }
+    return value.join(delim);
+}
+
+
+/**
+ * @deprecated - the GA4GH API has been deprecated.  This code no longer maintained.
+ * @param json
+ * @returns {Variant}
+ */
+function createGAVariant(json) {
+
+    var variant = new Variant();
+
+    variant.chr = json.referenceName;
+    variant.start = parseInt(json.start);  // Might get overriden below
+    variant.end = parseInt(json.end);      // Might get overriden below
+    variant.pos = variant.start + 1;       // GA4GH is 0 based.
+    variant.names = arrayToString(json.names, "; ");
+    variant.referenceBases = json.referenceBases;
+    variant.alternateBases = arrayToString(json.alternateBases);
+    variant.quality = json.quality;
+    variant.filter = arrayToString(json.filter);
+
+
+    // Flatten GA4GH attributes array
+    variant.info = {};
+    if (json.info) {
+        Object.keys(json.info).forEach(function (key) {
+            var value,
+                valueArray = json.info[key];
+
+            if (Array.isArray(valueArray)) {
+                value = valueArray.join(",");
+            } else {
+                value = valueArray;
+            }
+            variant.info[key] = value;
+        });
     }
 
-    return igv;
-})(igv || {});
+
+    // Need to build a hash of calls for fast lookup
+    // Note from the GA4GH spec on call ID:
+    //
+    // The ID of the call set this variant call belongs to. If this field is not present,
+    // the ordering of the call sets from a SearchCallSetsRequest over this GAVariantSet
+    // is guaranteed to match the ordering of the calls on this GAVariant.
+    // The number of results will also be the same.
+    variant.calls = {};
+    var order = 0, id;
+    if (json.calls) {
+        json.calls.forEach(function (call) {
+            id = call.callSetId;
+            variant.calls[id] = call;
+            order++;
+
+        })
+    }
+
+    init(variant);
+
+    return variant;
+
+}
+
+export {createVCFVariant, createGAVariant};
+

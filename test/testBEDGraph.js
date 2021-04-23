@@ -1,55 +1,33 @@
-/**
- * Created by turner on 2/13/14.
- */
-function runBEDGraphTests() {
+import "./utils/mockObjects.js"
+import FeatureSource from "../js/feature/featureSource.js";
+import {assert} from 'chai';
+import {genome} from "./utils/Genome.js";
 
+suite("testBedGraph", function () {
 
-    //mock object
-    if (igv === undefined) {
-        igv = {};
-    }
+    test("BEDGraphFeatureSource getFeatures", async function () {
 
-    igv.browser = {
-        getFormat: function () {
-        },
-
-        genome: {
-            getChromosome: function (chr) {
-            },
-            getChromosomeName: function (chr) {
-                return chr
-            }
-        }
-    };
-
-    asyncTest("BEDGraphFeatureSource getFeatures", function () {
 
         var chr = "chr19",
-            bpStart = 49302001,
-            bpEnd = 49304701,
-            featureSource = new igv.FeatureSource({
-                format: 'bedgraph',
-                url: 'data/wig/bedgraph-example-uscs.bedgraph'
-            });
+            start = 49302001,
+            end = 49304701,
+            featureSource = FeatureSource({
+                    format: 'bedgraph',
+                    url: require.resolve('./data/wig/bedgraph-example-uscs.bedgraph')
+                },
+                genome);
 
-        featureSource.getFeatures(chr, bpStart, bpEnd).then(function (features) {
+        const features = await featureSource.getFeatures({chr, start, end});
+        assert.ok(features);
+        assert.equal(features.length, 9);
 
-            ok(features);
-            equal(features.length, 9);
+        //chr19	49302600	49302900	-0.50
+        var f = features[2];
+        assert.equal(f.chr, "chr19", "chromosome");
+        assert.equal(f.start, 49302600, "start");
+        assert.equal(f.end, 49302900, "end");
+        assert.equal(f.value, -0.50, "value");
+    })
+})
 
-            //chr19	49302600	49302900	-0.50
-            var f = features[2];
-            equal(f.chr, "chr19", "chromosome");
-            equal(f.start, 49302600, "start");
-            equal(f.end, 49302900, "end");
-            equal(f.value, -0.50, "value");
 
-            start();
-        }).catch(function (error) {
-            console.log(error);
-            ok(false);
-        });
-
-    });
-
-}

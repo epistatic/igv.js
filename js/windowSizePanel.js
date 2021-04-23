@@ -23,43 +23,57 @@
  * THE SOFTWARE.
  */
 
-var igv = (function (igv) {
+import $ from "./vendor/jquery-3.3.1.slim.js";
+import {StringUtils} from "../node_modules/igv-utils/src/index.js";
 
-    igv.WindowSizePanel = function ($parent) {
+class WindowSizePanel {
+    constructor($parent, browser) {
+        this.$container = $('<div>', {class: 'igv-windowsize-panel-container'});
+        $parent.append(this.$container);
+        this.browser = browser;
+    }
 
-        this.$content = $('<div class="igv-windowsizepanel-content-div">');
-        $parent.append(this.$content);
+    show() {
+        this.$container.show();
+    }
 
-    };
+    hide() {
+        this.$container.hide();
+    }
 
-    igv.WindowSizePanel.prototype.show = function () {
-        this.$content.show();
-    };
+    updatePanel(referenceFrameList) {
+        this.$container.text(1 === referenceFrameList.length ? prettyBasePairNumber(Math.round(this.browser.getViewportWidth() * referenceFrameList[ 0 ].bpPerPixel)) : '');
+    }
+}
 
-    igv.WindowSizePanel.prototype.hide = function () {
-        this.$content.hide();
-    };
 
-    igv.WindowSizePanel.prototype.updateWithGenomicState = function (genomicState) {
+function prettyBasePairNumber  (raw) {
 
-        var viewportWidth,
-            referenceFrame,
-            length;
+    var denom,
+        units,
+        value,
+        floored;
 
-        if (1 === genomicState.locusCount && 'all' !== genomicState.locusSearchString) {
-            this.show();
-        } else {
-            this.hide();
-        }
+    if (raw > 1e7) {
+        denom = 1e6;
+        units = " mb";
+    } else if (raw > 1e4) {
 
-        viewportWidth = igv.Viewport.viewportWidthAtLocusIndex(genomicState.locusIndex);
-        referenceFrame = genomicState.referenceFrame;
+        denom = 1e3;
+        units = " kb";
 
-        length = viewportWidth * referenceFrame.bpPerPixel;
+        value = raw / denom;
+        floored = Math.floor(value);
+        return StringUtils.numberFormatter(floored) + units;
+    } else {
+        return StringUtils.numberFormatter(raw) + " bp";
+    }
 
-        this.$content.text( igv.prettyBasePairNumber(Math.round(length)) );
-    };
+    value = raw / denom;
+    floored = Math.floor(value);
 
-    return igv;
-})
-(igv || {});
+    return floored.toString() + units;
+}
+
+
+export default WindowSizePanel;

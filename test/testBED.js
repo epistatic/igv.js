@@ -1,233 +1,360 @@
-function runBedTests() {
+import "./utils/mockObjects.js"
+import FeatureFileReader from "../js/feature/featureFileReader.js";
+import FeatureSource from "../js/feature/featureSource.js";
+import {assert} from 'chai';
+import {genome} from "./utils/Genome.js";
+import GenomeUtils from "../js/genome/genome";
 
+suite("testBed", function () {
 
-    // mock object
-    if (igv === undefined) {
-        igv = {};
-    }
-
-    igv.browser = {
-        getFormat: function () {
-        },
-
-        genome: {
-            getChromosome: function (chr) {
-            },
-            getChromosomeName: function (chr) {
-                return chr
-            }
+    test("Space delimited", async function () {
+        const config = {
+            format: "bed",
+            url: require.resolve("./data/bed/space_delimited.bed"),
         }
-    };
+        const reader = FeatureSource(config, genome);
+        const features = await reader.getFeatures({chr: "chr2", start: 0, end: 128756129})
+        assert.equal(features.length, 5);
+    })
 
-    asyncTest("BED query", function () {
+    test("Empty lines", async function () {
+        const config = {
+            format: "bed",
+            url: require.resolve("./data/bed/basic_feature_3_columns_empty_lines.bed"),
+        }
+        const reader = FeatureSource(config, genome);
+        const features = await reader.getFeatures({chr: "chr1", start: 0, end: 128756129})
+        assert.ok(features);
+        assert.equal(features.length, 6);
+    })
+
+    test("Empty lines - gzipped", async function () {
+        const config = {
+            format: "bed",
+            url: require.resolve("./data/bed/basic_feature_3_columns_empty_lines.bed.gz"),
+        }
+        const reader = FeatureSource(config, genome);
+        const features = await reader.getFeatures({chr: "chr1", start: 0, end: 128756129});
+        assert.ok(features);
+        assert.equal(features.length, 6);
+    })
+
+    test("GWAS Catalog format", async function () {
+        const config = {
+            format: "gwasCatalog",
+            indexed: false,
+            url: require.resolve("./data/bed/gwasCatalog.test.txt")
+        }
+        const reader = new FeatureFileReader(config);
+        const features = await reader.readFeatures("chr1", 0, Number.MAX_VALUE);
+        assert.ok(features);
+        assert.equal(features.length, 3);
+        assert.equal(features[0].name, 'rs141175086');
+    })
+
+    test("wgRna format", async function () {
+        const config = {
+            format: "wgRna",
+            indexed: false,
+            url: require.resolve("./data/bed/wgRna.test.txt")
+        }
+        const reader = new FeatureFileReader(config);
+        const features = await reader.readFeatures("chr1", 0, Number.MAX_VALUE);
+        assert.ok(features);
+        assert.equal(features.length, 3);
+        assert.equal(features[0].name, 'hsa-mir-1302-2');
+    })
+
+    test("cpgIslandExt format", async function () {
+
+        const config = {
+            format: "cpgIslandExt",
+            indexed: false,
+            url: require.resolve("./data/bed/cpgIslandExt.test.txt")
+        }
+        const reader = new FeatureFileReader(config);
+        const features = await reader.readFeatures("chr1", 0, Number.MAX_VALUE);
+        assert.ok(features);
+        assert.equal(features.length, 3);
+        assert.equal(features[0].name, 'CpG: 111');
+    })
+
+    test("ensgene format", async function () {
+
+        const config = {
+            format: "ensgene",
+            indexed: false,
+            url: require.resolve("./data/bed/ensGene.test.txt")
+        }
+        const reader = new FeatureFileReader(config);
+
+        const features = await reader.readFeatures("chr1", 0, Number.MAX_VALUE);
+        assert.ok(features);
+        assert.equal(features.length, 3);
+        assert.equal(features[0].name, 'ENSDART00000164359.1');
+    })
+
+
+    /* 0  bin    585    smallint(5) unsigned    Indexing field to speed chromosome range queries.
+    * 1  swScore    1504    int(10) unsigned    Smith Waterman alignment score
+    * 2  milliDiv    13    int(10) unsigned    Base mismatches in parts per thousand
+    * 3  milliDel    4    int(10) unsigned    Bases deleted in parts per thousand
+    * 4  milliIns    13    int(10) unsigned    Bases inserted in parts per thousand
+    * 5  genoName    chr1    varchar(255)    Genomic sequence name
+    * 6  genoStart    10000    int(10) unsigned    Start in genomic sequence
+    * 7  genoEnd    10468    int(10) unsigned    End in genomic sequence
+    * 8  genoLeft    -249240153    int(11)    -#bases after match in genomic sequence
+    * 9  strand    +    char(1)    Relative orientation + or -
+    * 10 repName    (CCCTAA)n    varchar(255)    Name of repeat
+    * 11 repClass    Simple_repeat    varchar(255)    Class of repeat
+    * 12 repFamily    Simple_repeat    varchar(255)    Family of repeat
+    * 13 repStart    1    int(11)    Start (if strand is +) or -#bases after match (if strand is -) in repeat sequence
+    * 14 repEnd    463    int(11)    End in repeat sequence
+    * 15 repLeft    0    int(11)    -#bases after match (if strand is +) or start (if strand is -) in repeat sequence
+    * 16 id    1    char(1)    First digit of id field in RepeatMasker .out file. Best ignored. */
+    //24	0	0	0	chr1	46216	46240	-249204381	+	AT_rich	Low_complexity	Low_complexity	1	24	0	4
+
+    test("UCSC repeat masker format", async function () {
+
+        const config = {
+            type: "annotation",
+            format: "rmsk",
+            indexed: false,
+            url: require.resolve("./data/bed/Low_complexity.rmask")
+        }
+        const reader = new FeatureFileReader(config);
+        const features = await reader.readFeatures("chr1", 0, Number.MAX_VALUE);
+        assert.ok(features);
+        assert.equal(features.length, 3);
+
+        const f = features[0];
+        assert.equal("chr1", f.chr);
+        assert.equal(46216, f.start);
+        assert.equal(46240, f.end);
+        assert.equal(f.repName, 'AT_rich');
+    })
+
+    test("splice junctions", async function () {
+
+        const config = {
+            format: "bed",
+            indexed: false,
+            url: require.resolve("./data/bed/splice_junction_track.bed")
+        }
+        const reader = new FeatureFileReader(config);
+        const features = await reader.readFeatures("chr15", 0, Number.MAX_VALUE);
+        assert.equal(features.length, 2);
+        for (let f of features) {
+            const attrs = f.attributes;
+            assert.ok(attrs);
+        }
+    })
+
+    test("BED query", async function () {
 
         var chr = "chr1",
-            bpStart = 67655271,
-            bpEnd = 67684468,
-            featureSource = new igv.FeatureSource({
-                format: 'bed',
-                indexed: false,
-                url: 'data/bed/basic_feature_3_columns.bed'
-            });
+            start = 67655271,
+            end = 67684468,
+            featureSource = FeatureSource({
+                    format: 'bed',
+                    indexed: false,
+                    url: require.resolve('./data/bed/basic_feature_3_columns.bed')
+                },
+                genome);
 
         // Must get file header first
-        featureSource.getFileHeader().then(function (header) {
-            featureSource.getFeatures(chr, bpStart, bpEnd).then(function (features) {
-
-                ok(features);
-                equal(128, features.length);   // feature count. Determined by grepping file
-                equal(chr, features[0].chr); // ensure features chromosome is specified chromosome
-
-                start();
-            }, undefined);
-        }).catch(function (error) {
-            console.log(error);
-        });
+        await featureSource.getHeader();
+        const features = await featureSource.getFeatures({chr, start, end});
+        assert.ok(features);
+        assert.equal(128, features.length);   // feature count. Determined by grepping file
     });
 
-    asyncTest("BED track line", function () {
+    test("BED track line", async function () {
 
-        var featureSource = new igv.FeatureSource({
-            format: 'bed',
-            indexed: false,
-            url: 'data/bed/basic_feature_3_columns.bed'
-        });
-
-        featureSource.getFileHeader().then(function (header) {
-
-            ok(header);
-            equal(header.name, "Basic Features");
-            equal(header.color, "255,0,0");
-            start();
-        });
-
-    });
-
-    asyncTest("BED query gzip", function () {
-
-        var chr = "chr1",
-            bpStart = 67655271,
-            bpEnd = 67684468,
-            featureSource = new igv.FeatureSource({
+        const featureSource = FeatureSource({
                 format: 'bed',
-                url: 'data/bed/basic_feature_3_columns.bed.gz'
-            });
+                indexed: false,
+                url: require.resolve('./data/bed/basic_feature_3_columns.bed')
+            },
+            genome);
 
-        featureSource.getFeatures(chr, bpStart, bpEnd).then(function (features) {
-
-            ok(features);
-            equal(128, features.length);   // feature count. Determined by grepping file
-            equal(chr, features[0].chr); // ensure features chromosome is specified chromosome
-
-            start();
-        }, undefined);
-
+        const header = await featureSource.getHeader();
+        assert.ok(header);
+        assert.equal(header.name, "Basic Features");
+        assert.equal(header.color, "255,0,0");
     });
 
-    asyncTest("broadPeak parsing ", function () {
+    test("BED query gzip", async function () {
 
-        var featureSource,
-            chr,
-            bpStart,
-            bpEnd;
+        const chr = "chr1",
+            start = 67655271,
+            end = 67684468,
+            featureSource = FeatureSource({
+                    format: 'bed',
+                    url: require.resolve('./data/bed/basic_feature_3_columns.bed.gzipped')
+                },
+                genome);
 
-        featureSource = new igv.FeatureSource({
+        const features = await featureSource.getFeatures({chr, start, end});
+        assert.ok(features);
+        assert.equal(128, features.length);   // feature count. Determined by grepping file
+        assert.equal(chr, features[0].chr); // ensure features chromosome is specified chromosome
+    });
+
+    test("broadPeak parsing ", async function () {
+
+        const featureSource = FeatureSource({
             format: 'broadPeak',
-            url: "data/peak/test.broadPeak"
-        });
-
-        chr = "chr22";
-        bpStart = 16847690;
-        bpEnd = 20009819;
-        featureSource.getFeatures(chr, bpStart, bpEnd).then(function (features) {
-
-            var feature;
-
-            ok(features);
-            equal(features.length, 100);   // # of features over this region
-
-            feature = features[0];
-            equal(chr, feature.chr);
-
-            equal(feature.start, 16847690);
-            ok(feature.end > bpStart);
-            equal(feature.signal, 5.141275);
-
-            start();
-
-        }, undefined);
-
+            url: require.resolve("./data/peak/test.broadPeak"),
+        }, genome);
+        const chr = "chr22";
+        const start = 16847690;
+        const end = 20009819;
+        const features = await featureSource.getFeatures({chr, start, end});
+        assert.ok(features);
+        assert.equal(features.length, 100);   // # of features over this region
+        const feature = features[0];
+        assert.equal(chr, feature.chr);
+        assert.equal(feature.start, 16847690);
+        assert.ok(feature.end > start);
+        assert.equal(feature.signal, 5.141275);
     });
 
 
-    asyncTest("refflat parsing ", function () {
+    test("refflat parsing ", async function () {
 
-        var featureSource,
-            chr,
-            bpStart,
-            bpEnd;
+        const featureSource = FeatureSource({
+                format: 'refflat',
+                url: require.resolve("./data/bed/myc_refFlat.txt")
+            },
+            genome);
 
-        featureSource = new igv.FeatureSource({
-            format: 'refflat',
-            url: "data/bed/myc_refFlat.txt"
-        });
-
-        chr = "chr1";
-        bpStart = 1;
-        bpEnd = Number.MAX_VALUE;
-        featureSource.getFeatures(chr, bpStart, bpEnd).then(function (features) {
-
-            var feature;
-
-            ok(features);
-            equal(10, features.length);   // # of features over this region
-
-            feature = features[0];
-            equal("GJA9-MYCBP", feature.name);
-            equal(chr, feature.chr);
-
-            equal(39328161, feature.start);
-            ok(feature.end > bpStart);
-            equal(7, feature.exons.length);
-
-            start();
-
-        }, undefined);
-
+        const chr = "chr1";
+        const start = 1;
+        const end = Number.MAX_VALUE;
+        const features = await featureSource.getFeatures({chr, start, end});
+        assert.ok(features);
+        assert.equal(10, features.length);   // # of features over this region
+        const feature = features[0];
+        assert.equal("GJA9-MYCBP", feature.name);
+        assert.equal(chr, feature.chr);
+        assert.equal(39328161, feature.start);
+        assert.ok(feature.end > start);
+        assert.equal(7, feature.exons.length);
     });
 
 
-    asyncTest("genepred parsing ", function () {
+    test("genepred parsing ", async function () {
 
-        var featureSource,
-            chr,
-            bpStart,
-            bpEnd;
+        const featureSource = FeatureSource({
+                format: 'genePred',
+                url: require.resolve("./data/bed/genePred_myc_hg38.txt")
+            },
+            genome);
 
-        featureSource = new igv.FeatureSource({
-            format: 'genePred',
-            url: "data/bed/genePred_myc_hg38.txt"
-        });
-
-        chr = "chr8";
-        bpStart = 1;
-        bpEnd = Number.MAX_VALUE;
-        featureSource.getFeatures(chr, bpStart, bpEnd).then(function (features) {
-
-            var feature;
-
-            ok(features);
-            equal(7, features.length);   // # of features over this region
-
-            feature = features[0];
-            equal("uc022bbe.2", feature.name);
-            equal(chr, feature.chr);
-
-            equal(127735433, feature.start);
-            ok(feature.end > bpStart);
-            equal(3, feature.exons.length);
-
-            start();
-
-        }, undefined);
-
+        const chr = "chr8";
+        const start = 1;
+        const end = Number.MAX_VALUE;
+        const features = await featureSource.getFeatures({chr, start, end});
+        assert.ok(features);
+        assert.equal(7, features.length);   // # of features over this region
+        const feature = features[0];
+        assert.equal("uc022bbe.2", feature.name);
+        assert.equal(chr, feature.chr);
+        assert.equal(127735433, feature.start);
+        assert.ok(feature.end > start);
+        assert.equal(3, feature.exons.length);
     });
 
 
-    asyncTest("refgene parsing ", function () {
+    test("refgene parsing ", async function () {
 
-        var featureSource,
-            chr,
-            bpStart,
-            bpEnd;
+        const featureSource = FeatureSource({
+                format: 'refgene',
+                url: require.resolve("./data/bed/myc_refGene_genePredExt.txt")
+            },
+            genome);
 
-        featureSource = new igv.FeatureSource({
-            format: 'refgene',
-            url: "data/bed/myc_refGene_genePredExt.txt"
+        const chr = "chr1";
+        const start = 1;
+        const end = Number.MAX_VALUE;
+        const features = await featureSource.getFeatures({chr, start, end});
+        assert.ok(features);
+        assert.equal(10, features.length);   // # of features over this region
+        const feature = features[0];
+        assert.equal("GJA9-MYCBP", feature.name);
+        assert.equal(chr, feature.chr);
+        assert.equal(39328161, feature.start);
+        assert.ok(feature.end > start);
+        assert.equal(3, feature.exons.length);
+
+    })
+
+    test("ucsc interact", async function () {
+
+        const featureSource = FeatureSource({
+            url: require.resolve("./data/bed/ucsc_interact_1.bed")
         });
 
-        chr = "chr1";
-        bpStart = 1;
-        bpEnd = Number.MAX_VALUE;
-        featureSource.getFeatures(chr, bpStart, bpEnd).then(function (features) {
+        const trackType = await featureSource.trackType();
+        const header = await featureSource.getHeader();
 
-            var feature;
+        assert.equal(header.format, "interact");
+        assert.equal(trackType, "interact");
+    })
 
-            ok(features);
-            equal(10, features.length);   // # of features over this region
+    test("Chr aliasing", async function () {
 
-            feature = features[0];
-            equal("GJA9-MYCBP", feature.name);
-            equal(chr, feature.chr);
+        const config = {
+            format: "bed",
+            url: require.resolve("./data/bed/basic_feature_3_columns.bed"),
+        }
+        const featureSource = FeatureSource(config, genome);
+        const features = await featureSource.getFeatures({chr: "1", start: 67658429, end: 67659549});
+        assert.ok(features);
+        assert.equal(features.length, 4);
 
-            equal(39328161, feature.start);
-            ok(feature.end > bpStart);
-            equal(3, feature.exons.length);
+    })
 
-            start();
+    test("Searchable annotations", async function () {
 
-        }, undefined);
+        const config =                 {
+            format: "bed",
+            delimiter: "\t",
+            url: require.resolve("./data/bed/names_with_spaces.bed"),
+            indexed: false,
+            searchable: true,
+        }
+        const featureSource = FeatureSource(config, genome);
+        await featureSource.getFeatures({chr: "1", start: 0, end: Number.MAX_SAFE_INTEGER});
 
-    });
+        const found = genome.featureDB["KAN2 MARKER"]
+        assert.ok(found);
 
-}
+    })
+
+    test("Whole genome", async function () {
+
+        this.timeout(20000);
+
+        // Need an actual genome object for this test, not a mock object
+        const genome = await GenomeUtils.loadGenome({
+            id: "hg38",
+            name: "Human (GRCh38/hg38)",
+            fastaURL: "https://s3.dualstack.us-east-1.amazonaws.com/igv.broadinstitute.org/genomes/seq/hg38/hg38.fa",
+            indexURL: "https://s3.dualstack.us-east-1.amazonaws.com/igv.broadinstitute.org/genomes/seq/hg38/hg38.fa.fai"
+        })
+
+        const featureSource = FeatureSource({
+                format: 'refgene',
+                url: require.resolve("./data/bed/myc_refGene_genePredExt.txt")
+            },
+            genome);
+
+        const chr = "all";
+        const features = await featureSource.getFeatures({chr});
+        assert.equal(23, features.length);   // # of features over this region
+    })
+
+})
+

@@ -1,7 +1,8 @@
 /*
  * The MIT License (MIT)
  *
- * Copyright (c) 2014 Broad Institute
+ * Copyright (c) 2016-2017 The Regents of the University of California
+ * Author: Jim Robinson
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -23,144 +24,82 @@
  * THE SOFTWARE.
  */
 
-/**
- * Created by turner on 4/29/15.
- */
-var igv = (function (igv) {
+import { Alert } from '../../node_modules/igv-ui/dist/igv-ui.js'
+import $ from "../vendor/jquery-3.3.1.slim.js";
+import {makeDraggable, UIUtils} from "../../node_modules/igv-utils/src/index.js";
 
-    igv.DataRangeDialog = function ($parent) {
+class DataRangeDialog {
 
-        var self = this;
+    constructor($parent, alert) {
 
-        this.container = $('<div class="igv-grid-container-dialog">');
-        $parent.append(this.container);
+        // dialog container
+        this.$container = $("<div>", {class: 'igv-generic-dialog-container'});
+        $parent.append(this.$container);
+        this.$container.offset({left: 0, top: 0});
 
-        this.container.draggable();
-
-        this.header = $('<div class="igv-grid-header">');
-        this.headerBlurb = $('<div class="igv-grid-header-blurb">');
-
-        this.header.append(this.headerBlurb);
-
-        igv.attachDialogCloseHandlerWithParent(this.header, function () {
-            self.hide();
+        // dialog header
+        const $header = $("<div>", {class: 'igv-generic-dialog-header'});
+        this.$container.append($header);
+        UIUtils.attachDialogCloseHandlerWithParent($header[0], () => {
+            this.$minimum_input.val(undefined);
+            this.$maximum_input.val(undefined);
+            this.$container.offset({left: 0, top: 0});
+            this.$container.hide();
         });
 
-        this.container.append(this.header);
 
-        self.container.append(doLayout());
-
-        self.container.append(doOKCancel());
-
-        function doOKCancel() {
-
-            var rowContainer,
-                row,
-                column,
-                columnFiller;
+        // minimun
+        this.$minimum = $("<div>", {class: 'igv-generic-dialog-label-input'});
+        this.$container.append(this.$minimum);
+        const $mindiv = $('<div>');
+        $mindiv.text('Minimum');
+        this.$minimum.append($mindiv);
+        this.$minimum_input = $("<input>");
+        this.$minimum.append(this.$minimum_input);
 
 
-            row = $('<div class="igv-grid-dialog">');
+        // maximum
+        this.$maximum = $("<div>", {class: 'igv-generic-dialog-label-input'});
+        this.$container.append(this.$maximum);
+        const $maxdiv = $('<div>');
+        $maxdiv.text('Maximum');
+        this.$maximum.append($maxdiv);
+        this.$maximum_input = $("<input>");
+        this.$maximum.append(this.$maximum_input);
 
+        // ok | cancel
+        const $buttons = $("<div>", {class: 'igv-generic-dialog-ok-cancel'});
+        this.$container.append($buttons);
 
-            // shim
-            column = $('<div class="igv-col igv-col-1-8">');
-            //
-            row.append( column );
+        // ok
+        this.$ok = $("<div>");
+        $buttons.append(this.$ok);
+        this.$ok.text('OK');
 
+        // cancel
+        this.$cancel = $("<div>");
+        $buttons.append(this.$cancel);
+        this.$cancel.text('Cancel');
 
-            // ok button
-            column = $('<div class="igv-col igv-col-3-8">');
-            self.ok = $('<div class="igv-col-filler-ok-button">');
-            self.ok.text("OK");
-            column.append( self.ok );
-            //
-            row.append( column );
+        this.$cancel.on('click', () => {
+            this.$minimum_input.val(undefined);
+            this.$maximum_input.val(undefined);
+            this.$container.offset({left: 0, top: 0});
+            this.$container.hide();
+        });
 
+        //this.$container.draggable({ handle:$header.get(0) });
+        makeDraggable(this.$container.get(0), $header.get(0));
 
-            // cancel button
-            column = $('<div class="igv-col igv-col-3-8">');
-            columnFiller = $('<div class="igv-col-filler-cancel-button">');
-            columnFiller.text("Cancel");
-            columnFiller.click(function() { self.hide(); });
-            column.append( columnFiller );
-            //
-            row.append( column );
+        this.$container.hide();
+    }
 
+    configure(trackView) {
 
-            // shim
-            column = $('<div class="igv-col igv-col-1-8">');
-            //
-            row.append( column );
-
-
-            rowContainer = $('<div class="igv-grid-rect">');
-            rowContainer.append( row );
-
-            return rowContainer;
-        }
-
-        function doLayout() {
-
-            var rowContainer = $('<div class="igv-grid-rect">'),
-                row,
-                column;
-
-            // minimum
-            row = $('<div class="igv-grid-dialog">');
-
-            // vertical spacer
-            column = $('<div class="spacer10">');
-            row.append( column );
-
-
-            column = $('<div class="igv-col igv-col-3-8">');
-            self.minLabel = $('<div class="igv-data-range-input-label">');
-            self.minLabel.text("Minimum");
-            column.append( self.minLabel );
-            row.append( column );
-
-            column = $('<div class="igv-col igv-col-3-8">');
-            self.minInput = $('<input class="igv-data-range-input" type="text" value="125">');
-            column.append( self.minInput );
-            row.append( column );
-
-            rowContainer.append( row );
-
-
-            // maximum
-            row = $('<div class="igv-grid-dialog">');
-
-            column = $('<div class="igv-col igv-col-3-8">');
-            self.maxLabel = $('<div class="igv-data-range-input-label">');
-            self.maxLabel.text("Maximum");
-            column.append( self.maxLabel );
-            row.append( column );
-
-            column = $('<div class="igv-col igv-col-3-8">');
-            self.maxInput = $('<input class="igv-data-range-input" type="text" value="250">');
-            column.append( self.maxInput );
-            row.append( column );
-            rowContainer.append( row );
-
-            return rowContainer;
-
-        }
-
-    };
-
-    igv.DataRangeDialog.prototype.configureWithTrackView = function (trackView) {
-
-        var self = this,
-            dataRange,
-            min,
-            max;
-
-        this.trackView = trackView;
-
-        dataRange = this.trackView.dataRange();
-
-        if(dataRange) {
+        const dataRange = trackView.dataRange();
+        let min;
+        let max;
+        if (dataRange) {
             min = dataRange.min;
             max = dataRange.max;
         } else {
@@ -168,45 +107,54 @@ var igv = (function (igv) {
             max = 100;
         }
 
-        this.minInput.val(min);
-        this.maxInput.val(max);
+        this.$minimum_input.val(min);
+        this.$maximum_input.val(max);
 
-        this.ok.unbind();
-        this.ok.click(function() {
-
-            min = parseFloat(self.minInput.val());
-            max = parseFloat(self.maxInput.val());
-            if(isNaN(min) || isNaN(max)) {
-                igv.presentAlert("Must input numeric values");
-            } else {
-                trackView.setDataRange(min, max, false);
+        this.$minimum_input.unbind();
+        this.$minimum_input.on('keyup', (e) => {
+            if (13 === e.keyCode) {
+                this.processResults(trackView);
             }
-
-            self.hide();
-
         });
 
-    };
+        this.$maximum_input.unbind();
+        this.$maximum_input.on('keyup', (e) => {
+            if (13 === e.keyCode) {
+                this.processResults(trackView);
+            }
+        });
 
-    igv.DataRangeDialog.prototype.hide = function () {
-        this.container.offset( { left: 0, top: 0 } );
-        this.container.hide();
-    };
+        this.$ok.unbind();
+        this.$ok.on('click',  (e) => {
+            this.processResults(trackView);
+        });
+    }
 
-    igv.DataRangeDialog.prototype.show = function () {
 
-        var body_scrolltop = $("body").scrollTop(),
-            track_origin = $(this.trackView.trackDiv).offset(),
-            track_size = { width: $(this.trackView.trackDiv).outerWidth(), height: $(this.trackView.trackDiv).outerHeight()};
+    processResults(trackView) {
 
-        this.container.show();
+        const min = parseFloat(this.$minimum_input.val());
+        const max = parseFloat(this.$maximum_input.val());
+        if (isNaN(min) || isNaN(max)) {
+            Alert.presentAlert(new Error('Must input numeric values'), undefined);
+        } else {
+            trackView.setDataRange(min, max);
+        }
 
-        this.container.offset( { left: (track_size.width - 300), top: (track_origin.top + body_scrolltop) } );
+        this.$minimum_input.val(undefined);
+        this.$maximum_input.val(undefined);
+        this.$container.offset({left: 0, top: 0});
+        this.$container.hide();
+    }
 
-        this.container.offset( igv.constrainBBox(this.container, $(igv.browser.trackContainerDiv)) );
+    present($parent) {
 
-    };
+        const offset_top = $parent.offset().top;
+        const scroll_top = $('body').scrollTop();
 
-    return igv;
+        this.$container.offset({left: $parent.width() - this.$container.width(), top: (offset_top + scroll_top)});
+        this.$container.show();
+    }
+}
 
-})(igv || {});
+export default DataRangeDialog

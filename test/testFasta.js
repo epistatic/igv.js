@@ -1,120 +1,111 @@
-// Tests in this file require a server which supports range-byte requests, e.g. Apache.
+import "./utils/mockObjects.js"
+import FastaSequence from "../js/genome/fasta.js";
+import {decodeDataUri} from "../js/genome/fasta";
+import {assert} from 'chai';
 
-function runFastaTests() {
+suite("testFasta", function () {
 
-    var dataURL = "https://data.broadinstitute.org/igvdata/test/data/";
+    const dataURL = "https://data.broadinstitute.org/igvdata/test/data/";
 
-    module("Fasta");
+    test("FastaSequence - Test fasata with no index", async function () {
 
+        this.timeout(100000);
 
-//    asyncTest("Fasta index", 5, function () {                         ©
-//
-//        var sequence = igv.FastaSequence.ance();
-//
-//        sequence.loadIndex(function (index) {
-//
-//            ok(index, "Expected non-nil index.  Got: " + index);
-//
-//            var indexEntry = index["chr22"];
-//
-//            equal(indexEntry.size, 51304566, "indexEntry size");
-//            equal(indexEntry.position, 7, "indexEntry position");
-//            equal(indexEntry.basesPerLine, 50, "indexEntry basesPerLine");
-//            equal(indexEntry.bytesPerLine, 51, "indexEntry bytesPerLine");
-//            start();
-//        });
-//
-//    });
-
-    function handleError(error) {
-        console.log(error);
-        ok(false);
-    }
-
-    asyncTest("FastaSequence - Test fasata with no index", 1, function () {
-
-        var sequence = new igv.FastaSequence(
+        const fasta = new FastaSequence(
             {
                 fastaURL: dataURL + "fasta/test.fasta",
                 indexed: false
             }
         );
 
-        sequence.init().then(function () {
+        await fasta.init()
 
-            // Note -- coordinates are UCSC style
-            // chr22:29565177-29565216
-            var expectedSequence = "GCTGC";
-            sequence.getSequence("CACNG6--RPLP2", 60, 65).then(function (seq) {
+        // Note -- coordinates are UCSC style
+        // chr22:29565177-29565216
+        const expectedSequence = "GCTGC";
+        const seq = await fasta.getSequence("CACNG6--RPLP2", 60, 65);
+        assert.equal(seq, expectedSequence);
 
-                equal(seq, expectedSequence);
-                start();
-            }).catch(function (error) {
-                console.log(error);
-            })
-        }).catch(handleError)
     })
 
-    asyncTest("FastaSequence - Test getSequence", 2, function () {
+    test("FastaSequence - Test getSequence", async function () {
 
-        var sequence = new igv.FastaSequence({fastaURL: dataURL + "fasta/chr22.fa"});
+        this.timeout(100000);
 
-        sequence.init().then(function () {
+        const fasta = new FastaSequence({fastaURL: dataURL + "fasta/chr22.fa"});
+        await fasta.init();
 
-            // Note -- coordinates are UCSC style
-            // chr22:29565177-29565216
-            sequence.getSequence("chr22", 29565176, 29565216).then(function (sequence) {
+        // Note -- coordinates are UCSC style
+        // chr22:29565177-29565216
+        const sequence = await fasta.getSequence("chr22", 29565176, 29565216);
+        const expectedSeqString = "CTTGTAAATCAACTTGCAATAAAAGCTTTTCTTTTCTCAA",
+            seqString = sequence.toUpperCase();
+        assert.equal(seqString, expectedSeqString);
 
-                ok(sequence, "sequence");
-
-                var expectedSeqString = "CTTGTAAATCAACTTGCAATAAAAGCTTTTCTTTTCTCAA", seqString = sequence.toUpperCase();
-
-                equal(seqString, expectedSeqString);
-
-                start();
-            })
-        }).catch(handleError)
     })
 
-    asyncTest("FastaSequence - Test readSequence", 2, function () {
+    test("FastaSequence - Test readSequence", async function () {
 
-        var sequence = new igv.FastaSequence({fastaURL: dataURL + "fasta/chr22.fa"});
+        this.timeout(100000);
 
-        sequence.init().then(function () {
+        const fasta = new FastaSequence({fastaURL: dataURL + "fasta/chr22.fa"});
+        await fasta.init()
 
-            // Note -- coordinates are UCSC style
-            // chr22:29565177-29565216
-            sequence.readSequence("chr22", 29565176, 29565216).then(function (sequence) {
+        // Note -- coordinates are UCSC style
+        // chr22:29565177-29565216
+        const expectedSeqString = "CTTGTAAATCAACTTGCAATAAAAGCTTTTCTTTTCTCAA";
+        const sequence = await fasta.getSequence("chr22", 29565176, 29565216);
+        const seqString = sequence.toUpperCase();
+        assert.equal(seqString, expectedSeqString);
 
-                ok(sequence, "sequence");
-
-                var expectedSeqString = "CTTGTAAATCAACTTGCAATAAAAGCTTTTCTTTTCTCAA", seqString = sequence.toUpperCase();
-
-                equal(seqString, expectedSeqString);
-
-                start();
-            }).catch(handleError)
-        })
     })
 
-    asyncTest("FastaSequence - Test readSequence - with unknown sequence", 1, function () {
+    test("FastaSequence - Test readSequence - with unknown sequence", async function () {
 
-        var sequence = new igv.FastaSequence({fastaURL: dataURL + "fasta/chr22.fa"});
+        this.timeout(100000);
 
-        sequence.init().then(function () {
+        const fasta = new FastaSequence({fastaURL: dataURL + "fasta/chr22.fa"});
+        await fasta.init();
 
-            // Note -- coordinates are UCSC style
-            // chr22:29565177-29565216
-            sequence.readSequence("noSuchChromosome", 29565176, 29565216).then(function (nullSeq) {
-
-                ok(!nullSeq);
-                start();
-            }).catch(function (error) {
-                console.log(error);
-            })
-        }).catch(handleError)
+        // Note -- coordinates are UCSC style
+        // chr22:29565177-29565216
+        const nullSeq = await fasta.getSequence("noSuchChromosome", 29565176, 29565216);
+        assert.ok(!nullSeq);
     })
 
-}
+
+    // >chr1:1000001-1000025
+    // GGGCACAGCCTCACCCAGGAAAGCA
+
+    test("FastaSequence - Test fasta with start offset", async function () {
+
+        const fasta = new FastaSequence({fastaURL: require.resolve("./data/fasta/sliced.fasta"), indexed: false});
+        await fasta.init();
+
+        let expected = "GGGCACAGCCTCACCCAGGAAAGCA";
+        let seq = await fasta.getSequence("chr1", 1000000, 1000025);
+        assert.equal(seq, expected);
 
 
+        // Off left side
+        expected = "*****GGGCA";
+        seq = await fasta.getSequence("chr1", 999995, 1000005);
+        assert.equal(seq, expected);
+
+        // way....   Off left side
+        expected = "**********";
+
+        seq = await fasta.getSequence("chr1", 10, 20);
+        assert.equal(seq, expected);
+
+    })
+
+    test("data uri", function () {
+        const expectedSequence = "CGGGGAGAGAGAGAGAGCGAGCCAGGTTCAGGTCCAGGGAGGAGAGAGACAGCGCGCGCGAGGCGGAGACCTGGAGGGAGAGGAGCTGCGGAGAGGGGTTAGGCGGGGAGGGAGAGAGCCAGGTTCAGGTCCAGGGAGGAGAGAGACAGCGCGCGCGAGGCGGAGACCTGGAGGGAGAGGAGCTGCGGAGAGGGGTTAGGCGGGGAGAGAGAGAGCGAGCCAGGTTCAGGTCCAGGGAGGAGAGAGACAGCGCGCGCGAGGCGGAGACCTGGAGGGAGAGGAGCTGCGGAGAGGGGTTAGGCGGGGAGGGAGAGAGACAGCGCGCGCGAGGCGGAGACCTGGAGGGAGAGGAGCTGCGGAGAGGGGTTAGGCGGCGGGAGGCCCGGGAGCGTTACATGTGTGTGGACTCGGGGAGGGCGGCGGGGGGCCGCTCCTCGGGGCCGTCTGCCTGCAGGAAGGAGTCCACGGACTTGCTGCTGAGGCGGAAGGGCATCAGGCGGCAGAAGGTGCCGGGAGAGTAGGGAATCTGCGTGCGGGCCCTCTGCGAGGGGACCACCGTCTCCCCGGGAGACAGCCAGGGCGGCAGCCTGGCCAGGAGGCTGCGGTCCAGGGCCTCGTCCGGAGAAAACACAGGGTTGTCAATTCCTAGGAGAGAGGGCAGCGGCTAGTCAGCCTTCGGAGAGCCCCACGGCGGCAGGGGAGACCTCGCCGGGGCCGTCACCTGCTGGGTGCCTTGGAAAGTTAGGGTCACCGGGAAGGTTAGGGTCACGTGCCTTTCAGGTTGCGGGCCCTTCCCCCACATCCATGACCCCACACGCCACAGGCAGCACAGGTAACGTCTCGCTTCCCTCAAGACATACCCCACCTGCTCCCTGCCCGGCCCACGTCTCCCCGGACAGCAGCCTCCGAGTTGGTTGAGGGGGCACTCAGTGGGTGCCAAGCAGGGCCCTTGAGAACCCACAGGAGACCCCACCCCcccaggtcccagtgcccctggtccaa";
+        const dataUri = "data:application/gzip;base64,H4sIANLFrF8C/71SO07FMBDsuQudn16gQFpN4QvMBSIXoUa5v9iZtRNqJLCVF3u9nl/ex/j8ery3Z2vb9tqej7a9vaDniB8TehC9k/71OmurAWqpmUW4DtAt7tB9zgOBk9V3d/whwb+6+D0KCgeoBXSAYK+ZILyoZrdWyZNG6ig3FLQe8ZhLNuHrNC+XLAOFoxBeuKLbUyctOIzYLVjaamvhIWRTYom2eyyJYSlVEItBZuzWTFQMORAup8hUFJSn68sUlABkx6ic+Yk5sOj6ShtloxJx/BJid1SWadWx12mvNO7KbKy/yW3dPiVUHigi70Rm9ZLmBSMql16XZEnZcF6xHvgl9vJw5egQ7RJKWoLJilz4UrXMRPSZJtwSgakllrwcY4z9OE6/ziNf4/R2378BIJQ+9/4DAAA=";
+        const fasta = decodeDataUri(dataUri);
+        const lines = fasta.split('\n');
+        assert.equal(lines[1], expectedSequence);
+    })
+
+})
