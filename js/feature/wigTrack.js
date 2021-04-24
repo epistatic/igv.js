@@ -165,7 +165,14 @@ class WigTrack extends TrackBase {
                         }
                         const pixelEnd = x + width;
                         if (pixelEnd > lastPixelEnd || (f.value >= 0 && f.value > lastValue) || (f.value < 0 && f.value < lastNegValue)) {
-                            IGVGraphics.fillRect(ctx, x, y0, width, height, {fillStyle: color});
+                            if (this.graphType == "line") {
+                                const x_end = Math.floor((f.end - bpStart) / bpPerPixel)
+                                if (isNaN(x_end)) continue;
+                                const lineWidth = this.config.lineWidth || 2; 
+                                IGVGraphics.strokeLine(ctx, x, y, x_end, y, {strokeStyle: color, lineWidth: lineWidth});
+                            } else {
+                                IGVGraphics.fillRect(ctx, x, y0, width, height, {fillStyle: color});
+                            }
                         }
                         lastValue = f.value;
                         lastPixelEnd = pixelEnd;
