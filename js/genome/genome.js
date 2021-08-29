@@ -23,14 +23,16 @@
  * THE SOFTWARE.
  */
 
+import {loadFasta} from "./fasta.js";
 import Cytoband from "./cytoband.js";
-import FastaSequence from "./fasta.js";
 import {buildOptions} from "../util/igvUtils.js";
-import {igvxhr, StringUtils, URIUtils, Zlib} from "../../node_modules/igv-utils/src/index.js";
+import {igvxhr, StringUtils, URIUtils, BGZip} from "../../node_modules/igv-utils/src/index.js";
 import {Alert} from '../../node_modules/igv-ui/dist/igv-ui.js'
 import version from "../version.js";
 
 const DEFAULT_GENOMES_URL = "https://igv.org/genomes/genomes.json";
+const BACKUP_GENOMES_URL = "https://s3.amazonaws.com/igv.org.genomes/genomes.json";
+
 const splitLines = StringUtils.splitLines;
 
 const GenomeUtils = {
@@ -39,8 +41,7 @@ const GenomeUtils = {
 
         const cytobandUrl = options.cytobandURL;
         const aliasURL = options.aliasURL;
-        const sequence = new FastaSequence(options);
-        await sequence.init()
+        const sequence = await loadFasta(options);
 
         let cytobands
         if (cytobandUrl) {
@@ -62,10 +63,17 @@ const GenomeUtils = {
             const table = {};
 
             // Get default genomes
-            if(config.loadDefaultGenomes !== false) {
-                const url  = DEFAULT_GENOMES_URL + `?randomSeed=${Math.random().toString(36)}&version=${version()}`;  // prevent caching
-                const jsonArray = await igvxhr.loadJson(url, {});
-                processJson(jsonArray);
+            if (config.loadDefaultGenomes !== false) {
+                try {
+                    const url = DEFAULT_GENOMES_URL + `?randomSeed=${Math.random().toString(36)}&version=${version()}`;  // prevent caching
+                    const jsonArray = await igvxhr.loadJson(url, {timeout: 3000});
+                    processJson(jsonArray);
+                } catch (e) {
+                    console.error(e);
+                    const url = BACKUP_GENOMES_URL + `?randomSeed=${Math.random().toString(36)}&version=${version()}`;  // prevent caching
+                    const jsonArray = await igvxhr.loadJson(url, {});
+                    processJson(jsonArray);
+                }
             }
 
             // Add user-defined genomes
@@ -95,7 +103,7 @@ const GenomeUtils = {
     },
 
     // Expand a genome id to a reference object, if needed
-    expandReference: function(idOrConfig) {
+    expandReference: function (idOrConfig) {
 
         // idOrConfig might be json
         if (StringUtils.isString(idOrConfig) && idOrConfig.startsWith("{")) {
@@ -120,7 +128,7 @@ const GenomeUtils = {
             const knownGenomes = GenomeUtils.KNOWN_GENOMES;
             const reference = knownGenomes[genomeID];
             if (!reference) {
-                Alert.presentAlert(new Error(`Unknown genome id: ${ genomeID }`), undefined);
+                Alert.presentAlert(new Error(`Unknown genome id: ${genomeID}`), undefined);
             }
             return reference;
         } else {
@@ -131,6 +139,7 @@ const GenomeUtils = {
 
 
 class Genome {
+
     constructor(config, sequence, ideograms, aliases) {
 
         this.config = config;
@@ -212,12 +221,8 @@ class Genome {
         if (this.showWholeGenomeView() && this.chromosomes.hasOwnProperty("all")) {
             return "all";
         } else {
-            const chromosome = this.chromosomes[this.chromosomeNames[0]];
-            if (chromosome.rangeLocus) {
-                return chromosome.name + ":" + chromosome.rangeLocus;
-            } else {
-                return this.chromosomeNames[0];
-            }
+            return this.chromosomeNames[0];
+
         }
     }
 
@@ -342,90 +347,58 @@ class Genome {
         }
         return this.bpLength;
     }
+
+    async getSequence(chr, start, end) {
+        return this.sequence.getSequence(chr, start, end);
+    }
 }
 
-function loadCytobands(cytobandUrl, config) {
+async function loadCytobands(cytobandUrl, config) {
+
+    let data;
     if (cytobandUrl.startsWith("data:")) {
-        var data = decodeDataUri(cytobandUrl);
-        return Promise.resolve(getCytobands(data));
-    } else {
-        return igvxhr.loadString(cytobandUrl, buildOptions(config))
-            .then(function (data) {
-                return getCytobands(data);
-            });
-    }
-
-    function getCytobands(data) {
-        var bands = [],
-            lastChr,
-            n = 0,
-            c = 1,
-            lines = splitLines(data),
-            len = lines.length,
-            cytobands = {};
-
-        for (var i = 0; i < len; i++) {
-            var tokens = lines[i].split("\t");
-            var chr = tokens[0];
-            if (!lastChr) lastChr = chr;
-
-            if (chr !== lastChr) {
-
-                cytobands[lastChr] = bands;
-                bands = [];
-                lastChr = chr;
-                n = 0;
-                c++;
-            }
-
-            if (tokens.length === 5) {
-                //10	0	3000000	p15.3	gneg
-                var start = parseInt(tokens[1]);
-                var end = parseInt(tokens[2]);
-                var name = tokens[3];
-                var stain = tokens[4];
-                bands[n++] = new Cytoband(start, end, name, stain);
-            }
-        }
-
-        return cytobands;
-    }
-
-    function decodeDataUri(dataUri) {
-
-        let plain
-
-        if (dataUri.startsWith("data:application/gzip;base64")) {
-            plain = URIUtils.decodeDataURI(dataUri)
-        } else {
-
-            let bytes,
-                split = dataUri.split(','),
-                info = split[0].split(':')[1],
-                dataString = split[1];
-
-            if (info.indexOf('base64') >= 0) {
-                dataString = atob(dataString);
-            } else {
-                dataString = decodeURI(dataString);
-            }
-
-            bytes = new Uint8Array(dataString.length);
-            for (let i = 0; i < dataString.length; i++) {
-                bytes[i] = dataString.charCodeAt(i);
-            }
-
-            var inflate = new Zlib.Gunzip(bytes);
-            plain = inflate.decompress();
-        }
-
-        let s = "";
+        const plain = BGZip.decodeDataURI(cytobandUrl);
+        data = "";
         const len = plain.length;
         for (let i = 0; i < len; i++) {
-            s += String.fromCharCode(plain[i]);
+            data += String.fromCharCode(plain[i]);
         }
-        return s;
+    } else {
+        data = await igvxhr.loadString(cytobandUrl, buildOptions(config));
     }
+
+    // var bands = [],
+    //     lastChr,
+    //     n = 0,
+    //     c = 1,
+    //
+    //     len = lines.length,
+    const cytobands = {};
+    let lastChr;
+    let bands = [];
+    const lines = splitLines(data);
+    for (let line of lines) {
+        var tokens = line.split("\t");
+        var chr = tokens[0];
+        if (!lastChr) lastChr = chr;
+
+        if (chr !== lastChr) {
+            cytobands[lastChr] = bands;
+            bands = [];
+            lastChr = chr;
+        }
+
+        if (tokens.length === 5) {
+            //10	0	3000000	p15.3	gneg
+            var start = parseInt(tokens[1]);
+            var end = parseInt(tokens[2]);
+            var name = tokens[3];
+            var stain = tokens[4];
+            bands.push(new Cytoband(start, end, name, stain));
+        }
+    }
+
+    return cytobands;
 }
 
 function loadAliases(aliasURL, config) {
@@ -450,27 +423,31 @@ function constructWG(genome, config) {
 
     let wgChromosomes;
     if (config.chromosomeOrder) {
-        genome.wgChromosomeNames = config.chromosomeOrder.split(',').map(nm => nm.trim())
-        wgChromosomes = genome.wgChromosomeNames.map(nm => genome.chromosomes[nm]).filter(chr => chr !== undefined)
+        if (Array.isArray(config.chromosomeOrder)) {
+            genome.wgChromosomeNames = config.chromosomeOrder;
+        } else {
+            genome.wgChromosomeNames = config.chromosomeOrder.split(',').map(nm => nm.trim());
+        }
+        wgChromosomes = genome.wgChromosomeNames.map(nm => genome.chromosomes[nm]).filter(chr => chr !== undefined);
 
     } else {
 
         // Trim small chromosomes.
-        const lengths = Object.keys(genome.chromosomes).map(key => genome.chromosomes[key].bpLength)
-        const median = lengths.reduce((a, b) => Math.max(a, b))
+        const lengths = Object.keys(genome.chromosomes).map(key => genome.chromosomes[key].bpLength);
+        const median = lengths.reduce((a, b) => Math.max(a, b));
         const threshold = median / 50;
-        wgChromosomes = Object.values(genome.chromosomes).filter(chr => chr.bpLength > threshold)
+        wgChromosomes = Object.values(genome.chromosomes).filter(chr => chr.bpLength > threshold);
 
         // Sort chromosomes.  First segregate numeric and alpha names, sort numeric, leave alpha as is
-        const numericChromosomes = wgChromosomes.filter(chr => isDigit(chr.name.replace('chr', '')))
-        const alphaChromosomes = wgChromosomes.filter(chr => !isDigit(chr.name.replace('chr', '')))
-        numericChromosomes.sort((a, b) => Number.parseInt(a.name.replace('chr', '')) - Number.parseInt(b.name.replace('chr', '')))
+        const numericChromosomes = wgChromosomes.filter(chr => isDigit(chr.name.replace('chr', '')));
+        const alphaChromosomes = wgChromosomes.filter(chr => !isDigit(chr.name.replace('chr', '')));
+        numericChromosomes.sort((a, b) => Number.parseInt(a.name.replace('chr', '')) - Number.parseInt(b.name.replace('chr', '')));
 
-        const wgChromosomeNames = numericChromosomes.map(chr => chr.name)
+        const wgChromosomeNames = numericChromosomes.map(chr => chr.name);
         for (let chr of alphaChromosomes) {
-            wgChromosomeNames.push(chr.name)
+            wgChromosomeNames.push(chr.name);
         }
-        genome.wgChromosomeNames = wgChromosomeNames
+        genome.wgChromosomeNames = wgChromosomeNames;
     }
 
 

@@ -27,7 +27,7 @@ import BamReaderNonIndexed from "./bamReaderNonIndexed.js";
 import ShardedBamReader from "./shardedBamReader.js";
 import BamReader from "./bamReader.js";
 import BamWebserviceReader from "./bamWebserviceReader.js";
-import HtsgetReader from "./htsgetReader.js";
+import HtsgetBamReader from "../htsget/htsgetBamReader.js";
 import CramReader from "../cram/cramReader.js";
 import Ga4ghAlignmentReader from "../ga4gh/ga4ghAlignmentReader.js";
 import {packAlignmentRows, unpairAlignments} from "./alignmentUtils.js";
@@ -57,16 +57,16 @@ class BamSource {
         } else if ("pysam" === config.sourceType) {
             this.bamReader = new BamWebserviceReader(config, genome)
         } else if ("htsget" === config.sourceType) {
-            this.bamReader = new HtsgetReader(config, genome);
+            this.bamReader = new HtsgetBamReader(config, genome);
         } else if ("shardedBam" === config.sourceType) {
             this.bamReader = new ShardedBamReader(config, genome);
         } else if ("cram" === config.format) {
             this.bamReader = new CramReader(config, genome, browser);
         } else {
-            if (this.config.indexed === false) {
-                this.bamReader = new BamReaderNonIndexed(config, genome);
-            } else {
+            if (this.config.indexed !== false) { // && this.config.indexURL) {
                 this.bamReader = new BamReader(config, genome);
+            } else {
+                this.bamReader = new BamReaderNonIndexed(config, genome);
             }
         }
 

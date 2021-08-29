@@ -23,6 +23,7 @@
  * THE SOFTWARE.
  */
 
+import $ from "../vendor/jquery-3.3.1.slim.js";
 import FeatureSource from './featureSource.js';
 import TrackBase from "../trackBase.js";
 import IGVGraphics from "../igv-canvas.js";
@@ -42,6 +43,7 @@ class SegTrack extends TrackBase {
         super.init(config);
 
         this.type = config.type || "seg";
+        if(this.type === 'maf') this.type = 'mut';
         this.isLog = config.isLog;
         this.displayMode = config.displayMode || "EXPANDED"; // EXPANDED | SQUISHED -- TODO perhaps set his based on sample count
         this.height = config.height || 300;
@@ -120,20 +122,23 @@ class SegTrack extends TrackBase {
                 "FILL": "Fill",
             };
 
-        menuItems.push("<hr/>");
+        menuItems.push('<hr/>');
         menuItems.push("Sample Height:");
 
         const displayOptions = this.type === 'seg' ? ["SQUISHED", "EXPANDED", "FILL"] : ["SQUISHED", "EXPANDED"];
 
         for (let displayMode of displayOptions) {
+
+            const checkBox = createCheckbox(lut[displayMode], displayMode === this.displayMode)
             menuItems.push(
                 {
-                    object: createCheckbox(lut[displayMode], displayMode === this.displayMode),
+                    object: $(checkBox),
                     click: () => {
                         this.displayMode = displayMode;
                         this.config.displayMode = displayMode;
                         this.trackView.checkContentHeight();
                         this.trackView.repaintViews();
+                        this.trackView.moveScroller(this.trackView.sampleNameViewport.trackScrollDelta)
                     }
                 });
         }
@@ -413,7 +418,7 @@ class SegTrack extends TrackBase {
 
         for (let feature of featureList) {
             if (items.length > 0) {
-                items.push("<hr/>")
+                items.push('<hr/>')
             }
 
             if (typeof feature.popupData === 'function') {

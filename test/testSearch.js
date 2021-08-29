@@ -1,7 +1,6 @@
 import "./utils/mockObjects.js"
 import {assert} from 'chai';
 import {genome} from "./utils/Genome.js";
-import {macacaGenome} from "./utils/MacacaGenome.js";
 import {parseLocusString, searchWebService} from "../js/search.js";
 import search from "../js/search.js";
 

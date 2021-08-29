@@ -72,7 +72,7 @@ class BAMTrack extends TrackBase {
         this.showAllBases = config.showAllBases;
 
         this.showMismatches = config.showMismatches !== false;
-        this.color = config.color ;
+        this.color = config.color;
         this.coverageColor = config.coverageColor;
         this.minFragmentLength = config.minFragmentLength;   // Optional, might be undefined
         this.maxFragmentLength = config.maxFragmentLength;
@@ -222,11 +222,13 @@ class BAMTrack extends TrackBase {
 
 
         // Start with overage track items
-        let menuItems = ["<hr/>"];
+        let menuItems = [];
+
         menuItems = menuItems.concat(MenuUtils.numericDataMenuItems(this.trackView));
 
         // Color by items
-        const $e = $('<div class="igv-track-menu-category igv-track-menu-border-top">');
+        menuItems.push('<hr/>');
+        const $e = $('<div class="igv-track-menu-category">');
         $e.text('Color by:');
         menuItems.push({name: undefined, object: $e, click: undefined, init: undefined});
 
@@ -253,9 +255,9 @@ class BAMTrack extends TrackBase {
             }
         }
 
-        menuItems.push({object: $('<div class="igv-track-menu-border-top">')});
+        menuItems.push('<hr/>');
         menuItems.push({
-            object: createCheckbox("Show Coverage", this.showCoverage),
+            object: $(createCheckbox("Show Coverage", this.showCoverage)),
             click: () => {
                 this.showCoverage = !this.showCoverage;
                 adjustTrackHeight();
@@ -264,7 +266,7 @@ class BAMTrack extends TrackBase {
             }
         });
         menuItems.push({
-            object: createCheckbox("Show Alignments", this.showAlignments),
+            object: $(createCheckbox("Show Alignments", this.showAlignments)),
             click: () => {
                 this.showAlignments = !this.showAlignments;
                 adjustTrackHeight();
@@ -274,9 +276,9 @@ class BAMTrack extends TrackBase {
         });
 
         // Show all bases
-        menuItems.push({object: $('<div class="igv-track-menu-border-top">')});
+        menuItems.push('<hr/>');
         menuItems.push({
-            object: createCheckbox("Show all bases", this.showAllBases),
+            object: $(createCheckbox("Show all bases", this.showAllBases)),
             click: () => {
                 this.showAllBases = !this.showAllBases;
                 this.config.showAllBases = this.showAllBases;
@@ -286,7 +288,7 @@ class BAMTrack extends TrackBase {
 
         // Soft clips
         menuItems.push({
-            object: createCheckbox("Show soft clips", this.showSoftClips),
+            object: $(createCheckbox("Show soft clips", this.showSoftClips)),
             click: () => {
                 this.showSoftClips = !this.showSoftClips;
                 this.config.showSoftClips = this.showSoftClips;
@@ -301,9 +303,9 @@ class BAMTrack extends TrackBase {
 
         // View as pairs
         if (this.pairsSupported && this.alignmentTrack.hasPairs) {
-            menuItems.push({object: $('<div class="igv-track-menu-border-top">')});
+            menuItems.push('<hr/>');
             menuItems.push({
-                object: createCheckbox("View as pairs", this.viewAsPairs),
+                object: $(createCheckbox("View as pairs", this.viewAsPairs)),
                 click: () => {
                     this.viewAsPairs = !this.viewAsPairs;
                     this.config.viewAsPairs = this.viewAsPairs;
@@ -318,14 +320,14 @@ class BAMTrack extends TrackBase {
         }
 
 
-
         // Display mode
-        const $displayModeLabel = $('<div class="igv-track-menu-category igv-track-menu-border-top">');
-        $displayModeLabel.text('Display mode:');
-        menuItems.push({name: undefined, object: $displayModeLabel, click: undefined, init: undefined});
+        menuItems.push('<hr/>');
+        const $dml = $('<div class="igv-track-menu-category">');
+        $dml.text('Display mode:');
+        menuItems.push({name: undefined, object: $dml, click: undefined, init: undefined});
 
         menuItems.push({
-            object: createCheckbox("expand", this.alignmentTrack.displayMode === "EXPANDED"),
+            object: $(createCheckbox("expand", this.alignmentTrack.displayMode === "EXPANDED")),
             click: () => {
                 this.alignmentTrack.displayMode = "EXPANDED";
                 this.config.displayMode = "EXPANDED";
@@ -335,7 +337,7 @@ class BAMTrack extends TrackBase {
         });
 
         menuItems.push({
-            object: createCheckbox("squish", this.alignmentTrack.displayMode === "SQUISHED"),
+            object: $(createCheckbox("squish", this.alignmentTrack.displayMode === "SQUISHED")),
             click: () => {
                 this.alignmentTrack.displayMode = "SQUISHED";
                 this.config.displayMode = "SQUISHED";
@@ -343,7 +345,6 @@ class BAMTrack extends TrackBase {
                 this.trackView.repaintViews();
             }
         });
-
         return menuItems;
     }
 
@@ -355,7 +356,7 @@ class BAMTrack extends TrackBase {
      * @returns {{init: undefined, name: undefined, click: clickHandler, object: (jQuery|HTMLElement|jQuery.fn.init)}}
      */
     colorByCB(menuItem, showCheck) {
-        const $e = createCheckbox(menuItem.label, showCheck);
+        const $e = $(createCheckbox(menuItem.label, showCheck));
         const clickHandler = (ev) => {
 
             if (menuItem.key === this.alignmentTrack.colorBy) {
@@ -1034,6 +1035,7 @@ class AlignmentTrack {
         list.push({label: '&nbsp; gap size', click: () => sortByOption("GAP_SIZE")});
         list.push({label: '&nbsp; chromosome of mate', click: () => sortByOption("MATE_CHR")});
         list.push({label: '&nbsp; mapping quality', click: () => sortByOption("MQ")});
+        list.push({label: '&nbsp; read name', click: () => sortByOption("READ_NAME")});
         list.push({
             label: '&nbsp; tag', click: () => {
                 const cs = this.parent.sortObject;
@@ -1064,7 +1066,7 @@ class AlignmentTrack {
         list.push('<hr/>');
 
         const clickedObject = this.getClickedObject(viewport, clickState.y, clickState.genomicLocation);
-        if(clickedObject) {
+        if (clickedObject) {
 
             const showSoftClips = this.parent.showSoftClips;
             const clickedAlignment = (typeof clickedObject.alignmentContaining === 'function') ?
@@ -1079,7 +1081,7 @@ class AlignmentTrack {
                             const referenceFrame = clickState.viewport.referenceFrame;
                             if (this.browser.genome.getChromosome(clickedAlignment.mate.chr)) {
                                 this.highlightedAlignmentReadNamed = clickedAlignment.readName;
-                                this.browser.presentSplitScreenMultiLocusPanel(clickedAlignment, referenceFrame);
+                                this.browser.presentMultiLocusPanel(clickedAlignment, referenceFrame);
                             } else {
                                 Alert.presentAlert(`Reference does not contain chromosome: ${clickedAlignment.mate.chr}`);
                             }
@@ -1103,6 +1105,18 @@ class AlignmentTrack {
                     }
                 }
             });
+
+            list.push({
+                label: 'Copy read sequence',
+                click: () => {
+                    const alignment = clickedAlignment;
+                    if (!alignment) return;
+
+                    const seqstring = alignment.seq; //.map(b => String.fromCharCode(b)).join("");
+                    navigator.clipboard.writeText(seqstring);
+                }
+            });
+
             list.push('<hr/>');
         }
 

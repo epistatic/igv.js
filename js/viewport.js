@@ -5,33 +5,26 @@
 import $ from "./vendor/jquery-3.3.1.slim.js";
 import {Alert, Popover} from '../node_modules/igv-ui/dist/igv-ui.js';
 import GenomeUtils from "./genome/genome.js";
-import {createIcon} from "./igv-icons.js";
 import ViewportBase from "./viewportBase.js";
 import {DOMUtils, FileUtils} from "../node_modules/igv-utils/src/index.js";
-import MenuPopup from "./ui/menuPopup.js";
 import C2S from "./canvas2svg.js"
-import {getFilename} from "./util/igvUtils.js";
-import IGVGraphics from "./igv-canvas.js";
 
 const NOT_LOADED_MESSAGE = 'Error loading track data';
 
 class ViewPort extends ViewportBase {
 
-    constructor(trackView, $viewportContainer, referenceFrame, width) {
+    constructor(trackView, $viewportColumn, referenceFrame, width) {
 
-        super(trackView, $viewportContainer, referenceFrame, width)
+        super(trackView, $viewportColumn, referenceFrame, width)
 
     }
 
     initializationHelper() {
 
-        this.menuPopup = new MenuPopup(this.trackView.$viewportContainer)
-        this.menuPopup.$popover.hide()
-
         this.addMouseHandlers();
-        this.$spinner = $('<div class="igv-viewport-spinner">');
-        this.$spinner.append(createIcon("spinner"));
+        this.$spinner = $('<div>', { class: 'igv-loading-spinner-container' });
         this.$viewport.append(this.$spinner);
+        this.$spinner.append($('<div>'));
         this.stopSpinner();
 
         const {track} = this.trackView
@@ -65,12 +58,11 @@ class ViewPort extends ViewportBase {
                         }
                     } else {
                         str = track.name;
-
                     }
                 }
 
                 if (this.popover) this.popover.dispose()
-                this.popover = new Popover(this.trackView.$viewportContainer.get(0), (track.name || 'unnamed'))
+                this.popover = new Popover(this.browser.columnContainer, (track.name || 'unnamed'))
                 this.popover.presentContentWithEvent(e, str)
             });
             this.$trackLabel.mousedown(function (e) {
@@ -102,20 +94,11 @@ class ViewPort extends ViewportBase {
     }
 
     startSpinner() {
-        const $spinner = this.$spinner;
-        if ($spinner) {
-            $spinner.addClass("igv-fa5-spin");
-            $spinner.show();
-        }
+        this.$spinner.show()
     }
 
     stopSpinner() {
-
-        const $spinner = this.$spinner;
-        if ($spinner) {
-            $spinner.hide();
-            $spinner.removeClass("igv-fa5-spin");
-        }
+        this.$spinner.hide()
     }
 
     checkZoomIn() {
@@ -235,13 +218,14 @@ class ViewPort extends ViewportBase {
 
         let {features, roiFeatures, bpPerPixel, startBP, endBP} = this.tile
 
-        const isWGV = GenomeUtils.isWholeGenomeView(this.browser.referenceFrameList[0].chr)
+        // const isWGV = GenomeUtils.isWholeGenomeView(this.browser.referenceFrameList[0].chr)
+        const isWGV = GenomeUtils.isWholeGenomeView(this.referenceFrame.chr)
         let pixelWidth
 
         if (isWGV) {
-            bpPerPixel = this.referenceFrame.initialEnd / this.$viewport.width()
+            bpPerPixel = this.referenceFrame.end / this.$viewport.width()
             startBP = 0
-            endBP = this.referenceFrame.initialEnd
+            endBP = this.referenceFrame.end
             pixelWidth = this.$viewport.width()
         } else {
             pixelWidth = Math.ceil((endBP - startBP) / bpPerPixel)
@@ -289,6 +273,7 @@ class ViewPort extends ViewportBase {
         const drawConfiguration =
             {
                 context: ctx,
+                pixelXOffset,
                 pixelWidth,
                 pixelHeight,
                 pixelTop: canvasTop,
@@ -298,9 +283,7 @@ class ViewPort extends ViewportBase {
                 referenceFrame: this.referenceFrame,
                 selection: this.selection,
                 viewport: this,
-                viewportWidth: this.$viewport.width(),
-                //viewportContainerX: this.referenceFrame.toPixels(this.referenceFrame.start - startBP),
-                //viewportContainerWidth: this.browser.getViewportContainerWidth()
+                viewportWidth: this.$viewport.width()
             };
 
         this.draw(drawConfiguration, features, roiFeatures);
@@ -459,6 +442,7 @@ class ViewPort extends ViewportBase {
 
     // called by trackView.renderSVGContext() when rendering
     // entire browser as SVG
+
     renderSVGContext(context, { deltaX, deltaY }) {
 
         // Nothing to do if zoomInNotice is active
@@ -471,16 +455,15 @@ class ViewPort extends ViewportBase {
         const index = this.browser.referenceFrameList.indexOf(this.referenceFrame);
         const id = `${ str }_referenceFrame_${ index }_guid_${ DOMUtils.guid() }`
 
-        const yScrollDelta = $(this.contentDiv).position().top;
-        const dx = deltaX + (index * context.multiLocusGap);
-        const dy = deltaY + yScrollDelta;
+        const { top: yScrollDelta } = this.$content.position();
+
         const {width, height} = this.$viewport.get(0).getBoundingClientRect();
 
-        this.drawSVGWithContext(context, width, height, id, dx, dy, -yScrollDelta)
+        this.drawSVGWithContext(context, width, height, id, deltaX, deltaY + yScrollDelta, -yScrollDelta)
 
         if (this.$trackLabel && true === this.browser.trackLabelsVisible) {
-            const { x:xTrackLabel, y:yTrackLabel, width:wTracklabel, height:hTrackLabel } = DOMUtils.relativeDOMBBox(this.$viewport.get(0), this.$trackLabel.get(0));
-            this.renderTrackLabelSVG(context, deltaX + xTrackLabel, deltaY + yTrackLabel, wTracklabel, hTrackLabel)
+            const { x, y, width, height } = DOMUtils.relativeDOMBBox(this.$viewport.get(0), this.$trackLabel.get(0));
+            this.renderTrackLabelSVG(context, deltaX + x, deltaY + y, width, height)
         }
 
     }
@@ -512,28 +495,25 @@ class ViewPort extends ViewportBase {
     }
 
     // called by renderSVGContext()
-    drawSVGWithContext(context, width, height, id, tx, ty, clipYOffset) {
+    drawSVGWithContext(context, width, height, id, x, y, yClipOffset) {
+
+        context.saveWithTranslationAndClipRect(id, x, y, width, height, yClipOffset);
 
         let {start, bpPerPixel} = this.referenceFrame;
 
-        context.saveWithTranslationAndClipRect(id, tx, ty, width, height, clipYOffset);
-
-        const top = -this.$content.position().top;
         const config =
             {
                 context,
                 viewport: this,
                 referenceFrame: this.referenceFrame,
-                top,
-                pixelTop: top,
+                top: yClipOffset,
+                pixelTop: yClipOffset,
                 pixelWidth: width,
                 pixelHeight: height,
                 bpStart: start,
                 bpEnd: start + (width * bpPerPixel),
                 bpPerPixel,
                 viewportWidth: width,
-               // viewportContainerX: 0,
-               // viewportContainerWidth: this.browser.getViewportContainerWidth(),
                 selection: this.selection
             };
 
@@ -565,16 +545,17 @@ class ViewPort extends ViewportBase {
 
     createZoomInNotice($parent) {
 
-        const $notice = $('<div class="zoom-in-notice-container">');
-        $parent.append($notice);
+        const $container = $('<div>', { class: 'igv-zoom-in-notice-container' })
+        $parent.append($container);
 
         const $e = $('<div>');
-        $notice.append($e);
+        $container.append($e);
+
         $e.text('Zoom in to see features');
 
-        $notice.hide();
+        $container.hide();
 
-        return $notice;
+        return $container;
     }
 
     viewIsReady() {
@@ -625,7 +606,7 @@ class ViewPort extends ViewportBase {
             menuItems.push({label: 'Save Image (PNG)', click: () => self.saveImage()});
             menuItems.push({label: 'Save Image (SVG)', click: () => self.saveSVG()});
 
-            self.menuPopup.presentTrackContextMenu(e, menuItems)
+            browser.menuPopup.presentTrackContextMenu(e, menuItems)
         });
 
 
@@ -660,20 +641,17 @@ class ViewPort extends ViewportBase {
 
         function handleMouseUp(e) {
 
-
             // Any mouse up cancels drag and scrolling
             if (self.browser.dragObject || self.browser.isScrolling) {
                 self.browser.cancelTrackPan();
                 e.preventDefault();
                 e.stopPropagation();
-
                 self.enableClick = false;   // Until next mouse down
-
                 return;
+            } else {
+                self.browser.cancelTrackPan();
+                self.browser.endTrackDrag();
             }
-
-            self.browser.cancelTrackPan();
-            self.browser.endTrackDrag();
         }
 
         function handleClick(e) {
@@ -734,17 +712,16 @@ class ViewPort extends ViewportBase {
                     if (1 === browser.referenceFrameList.length) {
                         string = chr;
                     } else {
-                        let loci = browser.referenceFrameList.map(function (g) {
-                            return g.locusSearchString;
-                        });
-                        loci[browser.referenceFrameList.indexOf(self.referenceFrame)] = chr;
-                        string = loci.join(' ');
+                        const loci = browser.referenceFrameList.map(({ locusSearchString }) => locusSearchString)
+                        const index = browser.referenceFrameList.indexOf(self.referenceFrame)
+                        loci[ index ] = chr
+                        string = loci.join(' ')
                     }
 
                     browser.search(string);
 
                 } else {
-                    browser.zoomWithScaleFactor(0.5, centerBP, self)
+                    browser.zoomWithScaleFactor(0.5, centerBP, self.referenceFrame)
                 }
 
 
@@ -762,7 +739,7 @@ class ViewPort extends ViewportBase {
                             const content = getPopupContent(e, self);
                             if (content) {
                                 if (self.popover) self.popover.dispose()
-                                self.popover = new Popover(self.trackView.$viewportContainer.get(0))
+                                self.popover = new Popover(self.browser.columnContainer)
                                 self.popover.presentContentWithEvent(e, content)
                             }
                             clearTimeout(popupTimerID);
@@ -843,7 +820,7 @@ class ViewPort extends ViewportBase {
                 if (nameValue.name) {
                     const str = `<span>${nameValue.name}</span>&nbsp&nbsp&nbsp${nameValue.value}`
                     return `<div title="${nameValue.value}">${str}</div>`
-                } else if ('<hr>' === nameValue) { // this can be retired if nameValue.html is allowed.
+                } else if ('<hr/>' === nameValue) { // this can be retired if nameValue.html is allowed.
                     return nameValue
                 } else if (nameValue.html) {
                     return nameValue.html

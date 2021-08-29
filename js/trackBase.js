@@ -24,7 +24,7 @@
  */
 
 import {isSimpleType} from "./util/igvUtils.js";
-import {FileUtils, StringUtils, FeatureUtils} from "../node_modules/igv-utils/src/index.js";
+import {FileUtils, StringUtils, FeatureUtils, GoogleUtils} from "../node_modules/igv-utils/src/index.js";
 
 
 /**
@@ -60,10 +60,12 @@ class TrackBase {
 
         if (config.name || config.label) {
             this.name = config.name || config.label;
-        } else {
-            if (FileUtils.isFilePath(config.url)) this.name = config.url.name;
-            else this.name = config.url;
+        } else if (config.url instanceof File) {
+            this.name = config.url.name;
+        } else if (StringUtils.isString(config.url) && config.url.indexOf("://") > 0) {
+            this.name = FileUtils.getFilename(config.url);
         }
+
         this.id = this.config.id === undefined ? this.name : this.config.id;
 
         this.order = config.order;
@@ -243,6 +245,14 @@ class TrackBase {
         for (let key of Object.keys(tracklineConfg)) {
             if (!this.config.hasOwnProperty(key)) {
                 this[key] = tracklineConfg[key];
+                if(key === "height" && this.trackView) {
+                    try {
+                        const h = Number.parseInt(tracklineConfg[key]);
+                        this.trackView.setTrackHeight(h);
+                    } catch (e) {
+                        console.error(e);
+                    }
+                }
             }
         }
     }
@@ -326,9 +336,9 @@ class TrackBase {
                             const cravatLink = TrackBase.getCravatLink(feature.chr, feature.start + 1, ref, alt, genomeId)
                             console.log(cravatLink)
                             if (cravatLink) {
-                                data.push("<hr/>");
+                                data.push('<hr/>');
                                 data.push({html: cravatLink});
-                                data.push("<hr/>");
+                                data.push('<hr/>');
                             }
                         }
                     }
@@ -350,7 +360,7 @@ class TrackBase {
         data.push({name: 'Location', value: posString});
 
         if (this.infoURL) {
-            data.push("<hr/>");
+            data.push('<hr/>');
             const href = this.infoURL.replace("$$", feature.name);
             data.push({html: `<a target="_blank" href=${href}>${href}</a>`});
         }
