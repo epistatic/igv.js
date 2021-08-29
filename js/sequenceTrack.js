@@ -23,86 +23,332 @@
  * THE SOFTWARE.
  */
 
-var igv = (function (igv) {
+import IGVGraphics from "./igv-canvas.js";
+import {Alert} from '../node_modules/igv-ui/dist/igv-ui.js'
+import {randomRGBConstantAlpha} from "./util/colorPalletes.js";
 
-    igv.SequenceTrack = function (config) {
+const defaultSequenceTrackOrder = Number.MIN_SAFE_INTEGER;
+
+const translationDict = {
+    'TTT': 'F',
+    'TTC': 'F',
+    'TTA': 'L',
+    'TTG': 'L',
+    'CTT': 'L',
+    'CTC': 'L',
+    'CTA': 'L',
+    'CTG': 'L',
+    'ATT': 'I',
+    'ATC': 'I',
+    'ATA': 'I',
+    'ATG': 'M',
+    'GTT': 'V',
+    'GTC': 'V',
+    'GTA': 'V',
+    'GTG': 'V',
+    'TCT': 'S',
+    'TCC': 'S',
+    'TCA': 'S',
+    'TCG': 'S',
+    'CCT': 'P',
+    'CCC': 'P',
+    'CCA': 'P',
+    'CCG': 'P',
+    'ACT': 'T',
+    'ACC': 'T',
+    'ACA': 'T',
+    'ACG': 'T',
+    'GCT': 'A',
+    'GCC': 'A',
+    'GCA': 'A',
+    'GCG': 'A',
+    'TAT': 'Y',
+    'TAC': 'Y',
+    'TAA': 'STOP',
+    'TAG': 'STOP',
+    'CAT': 'H',
+    'CAC': 'H',
+    'CAA': 'Q',
+    'CAG': 'Q',
+    'AAT': 'N',
+    'AAC': 'N',
+    'AAA': 'K',
+    'AAG': 'K',
+    'GAT': 'D',
+    'GAC': 'D',
+    'GAA': 'E',
+    'GAG': 'E',
+    'TGT': 'C',
+    'TGC': 'C',
+    'TGA': 'STOP',
+    'TGG': 'W',
+    'CGT': 'R',
+    'CGC': 'R',
+    'CGA': 'R',
+    'CGG': 'R',
+    'AGT': 'S',
+    'AGC': 'S',
+    'AGA': 'R',
+    'AGG': 'R',
+    'GGT': 'G',
+    'GGC': 'G',
+    'GGA': 'G',
+    'GGG': 'G'
+}
+
+const complement = {};
+const t1 = ['A', 'G', 'C', 'T', 'Y', 'R', 'W', 'S', 'K', 'M', 'D', 'V', 'H', 'B', 'N', 'X']
+const t2 = ['T', 'C', 'G', 'A', 'R', 'Y', 'W', 'S', 'M', 'K', 'H', 'B', 'D', 'V', 'N', 'X']
+for (let i = 0; i < t1.length; i++) {
+    complement[t1[i]] = t2[i];
+    complement[t1[i].toLowerCase()] = t2[i].toLowerCase();
+}
+
+class SequenceTrack {
+
+    constructor(config, browser) {
+
+        this.type = "sequence"
+        this.browser = browser;
+        this.removable = false;
         this.config = config;
-        this.name = "";
+        this.name = "Sequence";
         this.id = "sequence";
         this.sequenceType = config.sequenceType || "dna";             //   dna | rna | prot
-        this.height = 15;
-        this.disableButtons = true;
-        this.order = config.order || 9999;
-        this.ignoreTrackMenu = true;
-        this.supportsWholeGenome = false;
-    };
+        this.height = 25;
+        this.disableButtons = false;
+        this.order = config.order || defaultSequenceTrackOrder;
+        this.ignoreTrackMenu = false;
 
-    igv.SequenceTrack.prototype.getFeatures = function (chr, bpStart, bpEnd, bpPerPixel) {
+        this.reversed = false;
+        this.frameTranslate = false;
 
-        return new Promise(function (fulfill, reject) {
-            if (bpPerPixel &&  bpPerPixel > 1) {
-                fulfill(null);
-            } else {
-                igv.browser.genome.sequence.getSequence(chr, bpStart, bpEnd).then(fulfill).catch(reject);
+    }
+
+    menuItemList() {
+
+        return [
+            {
+                name: this.reversed ? "Forward" : "Reverse",
+                click: () => {
+                    this.reversed = !this.reversed;
+                    this.trackView.repaintViews();
+                }
+            },
+            {
+                name: this.frameTranslate ? "Close Translation" : "Three-frame Translate",
+                click: () => {
+                    this.frameTranslate = !this.frameTranslate;
+                    if (this.frameTranslate) {
+                        for (let vp of this.trackView.viewports) {
+                            vp.setContentHeight(115);
+                        }
+                        this.trackView.setTrackHeight(115);
+                    } else {
+                        for (let vp of this.trackView.viewports) {
+                            vp.setContentHeight(25);
+                        }
+                        this.trackView.setTrackHeight(25);
+                    }
+                    this.trackView.repaintViews()
+
+                }
             }
-        });
-    };
+        ]
+    }
 
 
-    igv.SequenceTrack.prototype.draw = function (options) {
-
-        var self = this,
-            sequence = options.features,
-            ctx = options.context,
-            bpPerPixel = options.bpPerPixel,
-            bpStart = options.bpStart,
-            pixelWidth = options.pixelWidth,
-            bpEnd = bpStart + pixelWidth * bpPerPixel + 1,
-            len, w, y, pos, offset, b, p0, p1, pc, c;
-
-        if (sequence) {
-
-            len = sequence.length;
-            w = 1 / bpPerPixel;
-
-            y = this.height / 2;
-            for (pos = bpStart; pos <= bpEnd; pos++) {
-
-                offset = pos - bpStart;
-                if (offset < len) {
-//                            var b = sequence.charAt(offset);
-                    b = sequence[offset];
-                    p0 = Math.floor(offset * w);
-                    p1 = Math.floor((offset + 1) * w);
-                    pc = Math.round((p0 + p1) / 2);
-
-                    if (this.color) {
-                        c = this.color;
+    contextMenuItemList(clickState) {
+        const viewport = clickState.viewport;
+        if (viewport.referenceFrame.bpPerPixel <= 1) {
+            return [
+                {
+                    label: 'View visible sequence...',
+                    click: async () => {
+                        const pixelWidth = viewport.getWidth();
+                        const bpWindow = pixelWidth * viewport.referenceFrame.bpPerPixel;
+                        const chr = viewport.referenceFrame.chr;
+                        const start = viewport.referenceFrame.start;
+                        const end = start + bpWindow;
+                        const sequence = await this.browser.genome.sequence.getSequence(chr, start, end);
+                        Alert.presentAlert(sequence);
                     }
-                    else if ("dna" === this.sequenceType) {
-                        c = igv.nucleotideColors[b];
+                },
+                {
+                    label: 'Copy visible sequence',
+                    click: async () => {
+                        const pixelWidth = viewport.getWidth();
+                        const bpWindow = pixelWidth * viewport.referenceFrame.bpPerPixel;
+                        const chr = viewport.referenceFrame.chr;
+                        const start = viewport.referenceFrame.start;
+                        const end = start + bpWindow;
+                        const sequence = await this.browser.genome.sequence.getSequence(chr, start, end);
+                        navigator.clipboard.writeText(sequence);
                     }
-                    else {
-                        c = "rgb(0, 0, 150)";
+                },
+                '<hr/>'
+            ]
+        } else {
+            return undefined;
+        }
+    }
+
+
+    translateSequence(seq) {
+
+        const threeFrame = [[], [], []];
+
+        for (let fNum of [0, 1, 2]) {
+            let idx = fNum;
+
+            while ((seq.length - idx) >= 3) {
+                let st = seq.slice(idx, idx + 3);
+                if (this.reversed) {
+                    st = st.split('').reverse().join('');
+                }
+
+                const aa = translationDict[st.toUpperCase()] || "";
+                threeFrame[fNum].push({
+                    codons: st,
+                    aminoA: aa
+                });
+                idx += 3;
+            }
+        }
+
+        return threeFrame;
+    }
+
+    async getFeatures(chr, start, end, bpPerPixel) {
+
+        if (bpPerPixel && bpPerPixel > 1) {
+            return null;
+        } else {
+            const sequence = await this.browser.genome.sequence.getSequence(chr, start, end);
+            return {
+                bpStart: start,
+                sequence: sequence
+            }
+        }
+    }
+
+    draw(options) {
+
+        const ctx = options.context;
+
+        if (options.features) {
+
+            const sequence = options.features.sequence;
+            const sequenceBpStart = options.features.bpStart;
+            const bpEnd = 1 + options.bpStart + (options.pixelWidth * options.bpPerPixel);
+
+            let height = 15;
+            for (let bp = sequenceBpStart; bp <= bpEnd; bp++) {
+
+                let seqOffsetBp = Math.floor(bp - sequenceBpStart);
+
+                if (seqOffsetBp < sequence.length) {
+                    let letter = sequence[seqOffsetBp];
+
+                    if (this.reversed) {
+                        letter = complement[letter] || "";
                     }
 
-                    if (!c) c = "gray";
+                    let offsetBP = bp - options.bpStart;
+                    let aPixel = offsetBP / options.bpPerPixel;
+                    let bPixel = (offsetBP + 1) / options.bpPerPixel;
+                    let color = this.fillColor(letter);
 
-                    if (bpPerPixel > 1 / 10) {
-                        igv.graphics.fillRect(ctx, p0, 0, p1 - p0, self.height, { fillStyle: c });
+                    // IGVGraphics.fillRect(ctx, aPixel, 5, bPixel - aPixel, height - 5, { fillStyle: randomRGBConstantAlpha(150, 255, 0.75) });
+
+                    if (options.bpPerPixel > 1 / 10) {
+                        IGVGraphics.fillRect(ctx, aPixel, 5, bPixel - aPixel, height - 5, {fillStyle: color});
+                    } else {
+                        let xPixel = 0.5 * (aPixel + bPixel - ctx.measureText(letter).width);
+                        IGVGraphics.strokeText(ctx, letter, xPixel, height, {strokeStyle: color});
                     }
-                    else {
-                        igv.graphics.strokeText(ctx, b, pc, 3 + y, { strokeStyle: c });
+                }
+            }
+
+            if (this.frameTranslate) {
+
+                let transSeq;
+                if (this.reversed) {
+                    transSeq = sequence.split('').map(function (cv) {
+                        return complement[cv];
+                    });
+                    transSeq = transSeq.join('');
+                } else {
+                    transSeq = sequence;
+                }
+
+                let y = height;
+                let translatedSequence = this.translateSequence(transSeq);
+                for (let arr of translatedSequence) {
+
+                    let i = translatedSequence.indexOf(arr);
+                    let fNum = i;
+                    let h = 25;
+
+                    y = (i === 0) ? y + 10 : y + 30; //Little less room at first.
+
+                    for (let cv of arr) {
+
+                        let aaS;
+                        let idx = arr.indexOf(cv);
+                        let xSeed = (idx + fNum) + (2 * idx);
+                        let color = 0 === idx % 2 ? 'rgb(160,160,160)' : 'rgb(224,224,224)';
+
+                        let p0 = Math.floor(xSeed / options.bpPerPixel);
+                        let p1 = Math.floor((xSeed + 3) / options.bpPerPixel);
+                        let pc = Math.round((p0 + p1) / 2);
+
+                        if (cv.aminoA.indexOf('STOP') > -1) {
+                            color = 'rgb(255, 0, 0)';
+                            aaS = 'STOP'; //Color blind accessible
+                        } else {
+                            aaS = cv.aminoA;
+                        }
+
+                        if (cv.aminoA === 'M') {
+                            color = 'rgb(0, 153, 0)';
+                            aaS = 'START'; //Color blind accessible
+                        }
+
+                        IGVGraphics.fillRect(ctx, p0, y, p1 - p0, h, {fillStyle: color});
+
+                        if (options.bpPerPixel <= 1 / 10) {
+                            IGVGraphics.strokeText(ctx, aaS, pc - (ctx.measureText(aaS).width / 2), y + 15);
+                        }
                     }
                 }
             }
         }
+    }
 
-    };
+    supportsWholeGenome() {
+        return false;
+    }
 
-    return igv;
-})
-(igv || {});
+    computePixelHeight(ignore) {
+        return this.height;
+    }
 
+    fillColor(index) {
+
+        if (this.color) {
+            return this.color;
+        } else if ("dna" === this.sequenceType) {
+            return this.browser.nucleotideColors[index] || 'gray';
+        } else {
+            return 'rgb(0, 0, 150)';
+        }
+
+    }
+}
+
+export {defaultSequenceTrackOrder}
+
+export default SequenceTrack;
 
 

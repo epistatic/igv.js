@@ -23,23 +23,41 @@
  * THE SOFTWARE.
  */
 
-var igv = (function (igv) {
+import $ from "../vendor/jquery-3.3.1.slim.js";
+import FeatureSource from './featureSource.js';
+import TrackBase from "../trackBase.js";
+import IGVGraphics from "../igv-canvas.js";
+import {IGVMath, StringUtils} from "../../node_modules/igv-utils/src/index.js";
+import {createCheckbox} from "../igv-icons.js";
+import {GradientColorScale} from "../util/colorScale.js";
+import {isSimpleType} from "../util/igvUtils.js";
+import {ColorTable} from "../util/colorPalletes.js";
 
-    var sortDirection = "DESC";
+class SegTrack extends TrackBase {
 
-    igv.SegTrack = function (config) {
+    constructor(config, browser) {
+        super(config, browser);
+    }
 
-        igv.configTrack(this, config);
+    init(config) {
+        super.init(config);
 
-        this.displayMode = config.displayMode || "SQUISHED"; // EXPANDED | SQUISHED
-
+        this.type = config.type || "seg";
+        if(this.type === 'maf') this.type = 'mut';
+        this.isLog = config.isLog;
+        this.displayMode = config.displayMode || "EXPANDED"; // EXPANDED | SQUISHED -- TODO perhaps set his based on sample count
+        this.height = config.height || 300;
         this.maxHeight = config.maxHeight || 500;
-        this.sampleSquishHeight = config.sampleSquishHeight || 2;
-        this.sampleExpandHeight = config.sampleExpandHeight || 12;
+        this.squishedRowHeight = config.sampleSquishHeight || config.squishedRowHeight || 2;
+        this.expandedRowHeight = config.sampleExpandHeight || config.expandedRowHeight || 13;
+        this.sampleHeight = this.squishedRowHeight;      // Initial value, will get overwritten when rendered
 
-        this.posColorScale = config.posColorScale ||
-            new igv.GradientColorScale(
-                {
+        if (config.color) {
+            this.color = config.color;
+        } else {
+            // Color scales for "seg" (copy number) tracks.
+            this.posColorScale = config.posColorScale ||
+                new GradientColorScale({
                     low: 0.1,
                     lowR: 255,
                     lowG: 255,
@@ -48,11 +66,9 @@ var igv = (function (igv) {
                     highR: 255,
                     highG: 0,
                     highB: 0
-                }
-            );
-        this.negColorScale = config.negColorScale ||
-            new igv.GradientColorScale(
-                {
+                });
+            this.negColorScale = config.negColorScale ||
+                new GradientColorScale({
                     low: -1.5,
                     lowR: 0,
                     lowG: 0,
@@ -61,167 +77,238 @@ var igv = (function (igv) {
                     highR: 255,
                     highG: 255,
                     highB: 255
-                }
-            );
+                });
 
-        this.sampleCount = 0;
-        this.samples = {};
-        this.sampleNames = [];
+            // Color table for mutation (mut and maf) tracks
+            this.colorTable = new ColorTable(config.colorTable || MUT_COLORS);
+        }
+
+        this.sampleKeys = [];
+        this.sampleNames = new Map();
+        if (config.samples) {
+            // Explicit setting, keys == names
+            for (let s of config.samples) {
+                this.sampleKeys.push(s);
+                this.sampleNames.set(s, s);
+            }
+            this.explicitSamples = true;
+        }
 
         //   this.featureSource = config.sourceType === "bigquery" ?
         //       new igv.BigQueryFeatureSource(this.config) :
-        this.featureSource = new igv.FeatureSource(this.config);
+        this.featureSource = FeatureSource(this.config, this.browser.genome);
 
-        this.supportsWholeGenome = true;
+        this.initialSort = config.sort;
+    }
+
+    async postInit() {
+        if (typeof this.featureSource.getHeader === "function") {
+            this.header = await this.featureSource.getHeader();
+        }
+        // Set properties from track line
+        if (this.header) {
+            this.setTrackProperties(this.header)
+        }
+    }
 
 
-    };
+    menuItemList() {
 
-    igv.SegTrack.prototype.menuItemList = function (popover) {
-
-        var self = this;
-
-        return [
+        const menuItems = [];
+        const lut =
             {
-                name: ("SQUISHED" === this.displayMode) ? "Expand sample hgt" : "Squish sample hgt",
-                click: function () {
-                    popover.hide();
-                    self.toggleSampleHeight();
-                }
-            }
-        ];
+                "SQUISHED": "Squish",
+                "EXPANDED": "Expand",
+                "FILL": "Fill",
+            };
 
-    };
+        menuItems.push('<hr/>');
+        menuItems.push("Sample Height:");
 
-    igv.SegTrack.prototype.toggleSampleHeight = function () {
+        const displayOptions = this.type === 'seg' ? ["SQUISHED", "EXPANDED", "FILL"] : ["SQUISHED", "EXPANDED"];
 
-        this.displayMode = ("SQUISHED" === this.displayMode) ? "EXPANDED" : "SQUISHED";
+        for (let displayMode of displayOptions) {
 
-        this.trackView.update();
-    };
-
-    igv.SegTrack.prototype.getFeatures = function (chr, bpStart, bpEnd) {
-
-        var self = this;
-        return new Promise(function (fulfill, reject) {
-            // If no samples are defined, optionally query feature source.  This step was added to support the TCGA BigQuery
-            if (self.sampleCount === 0 && (typeof self.featureSource.reader.allSamples == "function")) {
-                self.featureSource.reader.allSamples().then(function (samples) {
-                    samples.forEach(function (sample) {
-                        self.samples[sample] = self.sampleCount;
-                        self.sampleNames.push(sample);
-                        self.sampleCount++;
-                    })
-                    self.featureSource.getFeatures(chr, bpStart, bpEnd).then(fulfill).catch(reject);
-                }).catch(reject);
-            }
-            else {
-                self.featureSource.getFeatures(chr, bpStart, bpEnd).then(fulfill).catch(reject);
-            }
-        });
-    };
-
-    igv.SegTrack.prototype.draw = function (options) {
-
-        var myself = this,
-            featureList,
-            ctx,
-            bpPerPixel,
-            bpStart,
-            pixelWidth,
-            pixelHeight,
-            bpEnd,
-            segment,
-            len,
-            sample,
-            i,
-            y,
-            color,
-            value,
-            px,
-            px1,
-            pw,
-            xScale,
-            sampleHeight,
-            border;
-
-        sampleHeight = ("SQUISHED" === this.displayMode) ? this.sampleSquishHeight : this.sampleExpandHeight;
-        border = ("SQUISHED" === this.displayMode) ? 0 : 1;
-
-        ctx = options.context;
-        pixelWidth = options.pixelWidth;
-        pixelHeight = options.pixelHeight;
-        igv.graphics.fillRect(ctx, 0, 0, pixelWidth, pixelHeight, {'fillStyle': "rgb(255, 255, 255)"});
-
-        featureList = options.features;
-        if (featureList) {
-
-            bpPerPixel = options.bpPerPixel;
-            bpStart = options.bpStart;
-            bpEnd = bpStart + pixelWidth * bpPerPixel + 1;
-            xScale = bpPerPixel;
-
-            for (i = 0, len = featureList.length; i < len; i++) {
-                sample = featureList[i].sample;
-                if (!this.samples.hasOwnProperty(sample)) {
-                    this.samples[sample] = myself.sampleCount;
-                    this.sampleNames.push(sample);
-                    this.sampleCount++;
-                }
-            }
-
-            checkForLog(featureList);
-
-            for (i = 0, len = featureList.length; i < len; i++) {
-
-                segment = featureList[i];
-
-                if (segment.end < bpStart) continue;
-                if (segment.start > bpEnd) break;
-
-                y = myself.samples[segment.sample] * sampleHeight + border;
-
-                value = segment.value;
-                if (!myself.isLog) {
-                    value = Math.log2(value / 2);
-                }
-
-                if (value < -0.1) {
-                    color = myself.negColorScale.getColor(value);
-                }
-                else if (value > 0.1) {
-                    color = myself.posColorScale.getColor(value);
-                }
-                else {
-                    color = "white";
-                }
-
-                px = Math.round((segment.start - bpStart) / xScale);
-                px1 = Math.round((segment.end - bpStart) / xScale);
-                pw = Math.max(1, px1 - px);
-
-                igv.graphics.fillRect(ctx, px, y, pw, sampleHeight - 2 * border, {fillStyle: color});
-
-            }
-        }
-        else {
-            console.log("No feature list");
-        }
-
-
-        function checkForLog(featureList) {
-            var i;
-            if (myself.isLog === undefined) {
-                myself.isLog = false;
-                for (i = 0; i < featureList.length; i++) {
-                    if (featureList[i].value < 0) {
-                        myself.isLog = true;
-                        return;
+            const checkBox = createCheckbox(lut[displayMode], displayMode === this.displayMode)
+            menuItems.push(
+                {
+                    object: $(checkBox),
+                    click: () => {
+                        this.displayMode = displayMode;
+                        this.config.displayMode = displayMode;
+                        this.trackView.checkContentHeight();
+                        this.trackView.repaintViews();
+                        this.trackView.moveScroller(this.trackView.sampleNameViewport.trackScrollDelta)
                     }
+                });
+        }
+
+        return menuItems;
+
+    }
+
+    hasSamples() {
+        return true;   // SEG, MUT, and MAF tracks have samples by definition
+    }
+
+    getSamples() {
+        return {
+            names: this.sampleKeys.map(key => this.sampleNames.get(key)),
+            height: this.sampleHeight,
+            yOffset: 0
+        }
+    }
+
+    async getFeatures(chr, start, end) {
+        const features = await this.featureSource.getFeatures({chr, start, end});
+        if (this.initialSort) {
+            const sort = this.initialSort;
+            this.sortSamples(sort.chr, sort.start, sort.end, sort.direction, features);
+            this.initialSort = undefined;  // Sample order is sorted,
+        }
+        return features;
+    }
+
+
+    draw({context, renderSVG, pixelTop, pixelWidth, pixelHeight, features, bpPerPixel, bpStart}) {
+
+        IGVGraphics.fillRect(context, 0, 0, pixelWidth, pixelHeight, {'fillStyle': "rgb(255, 255, 255)"});
+
+        if (features && features.length > 0) {
+
+            this.checkForLog(features);
+
+            // New segments could conceivably add new samples
+            this.updateSampleKeys(features);
+
+            // Create a map for fast id -> row lookup
+            const samples = {};
+            this.sampleKeys.forEach(function (id, index) {
+                samples[id] = index;
+            })
+
+            let border;
+            switch (this.displayMode) {
+                case "FILL":
+                    this.sampleHeight = pixelHeight / this.sampleKeys.length;
+                    border = 0
+                    break;
+
+                case "SQUISHED":
+                    this.sampleHeight = this.squishedRowHeight;
+                    border = 0;
+                    break;
+
+                default:   // EXPANDED
+                    this.sampleHeight = this.expandedRowHeight;
+                    border = 1;
+            }
+            const rowHeight = this.sampleHeight;
+
+
+            // this.featureMap = new Map()
+
+            for (let segment of features) {
+                segment.pixelRect = undefined;   // !important, reset this in case segment is not drawn
+            }
+
+            const pixelBottom = pixelTop + pixelHeight;
+            const bpEnd = bpStart + pixelWidth * bpPerPixel + 1;
+            const xScale = bpPerPixel;
+
+            this.sampleYStart = undefined
+            for (let f of features) {
+
+                if (f.end < bpStart) continue;
+                if (f.start > bpEnd) break;
+
+                const sampleKey = f.sampleKey || f.sample
+                f.row = samples[sampleKey];
+                const y = f.row * rowHeight + border;
+
+                if (undefined === this.sampleYStart) {
+                    this.sampleYStart = y
+                }
+
+                const bottom = y + rowHeight;
+
+                if (bottom < pixelTop || y > pixelBottom) {
+                    continue;
+                }
+
+                const segmentStart = Math.max(f.start, bpStart);
+                // const segmentStart = segment.start;
+                let x = Math.round((segmentStart - bpStart) / xScale);
+
+                const segmentEnd = Math.min(f.end, bpEnd);
+                // const segmentEnd = segment.end;
+                const x1 = Math.round((segmentEnd - bpStart) / xScale);
+                let w = Math.max(1, x1 - x);
+
+                let color;
+                let h;
+                if (this.color) {
+                    if (typeof this.color === "function") {
+                        color = this.color(f);
+                    } else {
+                        color = this.color;
+                    }
+                } else if ("mut" === this.type) {
+                    color = this.colorTable.getColor(f.value.toLowerCase());
+                    h = rowHeight - 2 * border;
+                    if (w < 3) {
+                        w = 3;
+                        x -= 1;
+                    }               } else {
+                    // Assume seg track
+                    let value = f.value;
+                    if (!this.isLog) {
+                        value = IGVMath.log2(value / 2);
+                    }
+                    if (value < -0.1) {
+                        color = this.negColorScale.getColor(value);
+                    } else if (value > 0.1) {
+                        color = this.posColorScale.getColor(value);
+                    } else {
+                        color = "white";
+                    }
+
+                    let sh = rowHeight;
+                    if (rowHeight < 0.25) {
+                        const f = 0.1 + 2 * Math.abs(value);
+                        sh = Math.min(1, f * rowHeight);
+                    }
+                    h = sh - 2 * border
+                }
+
+
+                f.pixelRect = {x, y, w, h};
+
+                // Use for diagnostic rendering
+                // context.fillStyle = randomRGB(180, 240)
+                // context.fillStyle = randomGrey(200, 255)
+                context.fillStyle = color;
+                context.fillRect(x, y, w, h);
+            }
+
+        } else {
+            //console.log("No feature list");
+        }
+
+    }
+
+
+    checkForLog(features) {
+        if (this.isLog === undefined) {
+            this.isLog = false;
+            for (let feature of features) {
+                if (feature.value < 0) {
+                    this.isLog = true;
+                    return;
                 }
             }
         }
-    };
+    }
 
     /**
      * Optional method to compute pixel height to accomodate the list of features.  The implementation below
@@ -230,167 +317,239 @@ var igv = (function (igv) {
      * @param features
      * @returns {number}
      */
-    igv.SegTrack.prototype.computePixelHeight = function (features) {
+    computePixelHeight(features) {
 
-        var sampleHeight = ("SQUISHED" === this.displayMode) ? this.sampleSquishHeight : this.sampleExpandHeight;
+        if (!features) return 0;
 
-        for (i = 0, len = features.length; i < len; i++) {
-            sample = features[i].sample;
-            if (!this.samples.hasOwnProperty(sample)) {
-                this.samples[sample] = this.sampleCount;
-                this.sampleNames.push(sample);
-                this.sampleCount++;
-            }
-        }
-
-        return this.sampleCount * sampleHeight;
-    };
+        const sampleHeight = ("SQUISHED" === this.displayMode) ? this.squishedRowHeight : this.expandedRowHeight;
+        this.updateSampleKeys(features);
+        return this.sampleKeys.length * sampleHeight;
+    }
 
     /**
      * Sort samples by the average value over the genomic range in the direction indicated (1 = ascending, -1 descending)
      */
-    igv.SegTrack.prototype.sortSamples = function (chr, bpStart, bpEnd, direction) {
+    async sortSamples(chr, start, end, direction, featureList) {
 
-        var self = this,
-            d2 = (direction === "ASC" ? 1 : -1);
+        if (!featureList) {
+            featureList = await this.featureSource.getFeatures({chr, start, end});
+        }
+        if (!featureList) return;
 
-        this.featureSource.getFeatures(chr, bpStart, bpEnd).then(function (featureList) {
+        this.updateSampleKeys(featureList);
 
-            var segment,
-                min,
-                max,
-                f,
-                i,
-                s,
-                sampleNames,
-                scores = {},
-                bpLength = bpEnd - bpStart + 1;
+        const scores = {};
+        const d2 = (direction === "ASC" ? 1 : -1);
 
+        const sortSeg = () => {
             // Compute weighted average score for each sample
-            for (i = 0; i < featureList.length; i++) {
-
-                segment = featureList[i];
-
-                if (segment.end < bpStart) continue;
-                if (segment.start > bpEnd) break;
-
-                min = Math.max(bpStart, segment.start);
-                max = Math.min(bpEnd, segment.end);
-                f = (max - min) / bpLength;
-
-                s = scores[segment.sample];
-                if (!s) s = 0;
-                scores[segment.sample] = s + f * segment.value;
-
+            const bpLength = end - start + 1;
+            for (let segment of featureList) {
+                if (segment.end < start) continue;
+                if (segment.start > end) break;
+                const min = Math.max(start, segment.start);
+                const max = Math.min(end, segment.end);
+                const f = (max - min) / bpLength;
+                const sampleKey = segment.sampleKey || segment.sample
+                const s = scores[sampleKey] || 0;
+                scores[sampleKey] = s + f * segment.value;
             }
 
             // Now sort sample names by score
-            sampleNames = Object.keys(self.samples);
-            sampleNames.sort(function (a, b) {
-
-                var s1 = scores[a];
-                var s2 = scores[b];
-                if (!s1) s1 = Number.MAX_VALUE;
-                if (!s2) s2 = Number.MAX_VALUE;
-
-                if (s1 == s2) return 0;
+            this.sampleKeys.sort(function (a, b) {
+                let s1 = scores[a];
+                let s2 = scores[b];
+                if (!s1) s1 = d2 * Number.MAX_VALUE;
+                if (!s2) s2 = d2 * Number.MAX_VALUE;
+                if (s1 === s2) return 0;
                 else if (s1 > s2) return d2;
                 else return d2 * -1;
-
             });
-
-            // Finally update sample hash
-            for (i = 0; i < sampleNames.length; i++) {
-                self.samples[sampleNames[i]] = i;
-            }
-            self.sampleNames = sampleNames;
-
-            self.trackView.update();
-            // self.trackView.$viewport.scrollTop(0);
-
-
-        }).catch(function(error) {
-            console.log(error);
-        });
-    };
-
-    /**
-     * Handle an alt-click.   TODO perhaps generalize this for all tracks (optional).
-     *
-     * @param genomicLocation
-     * @param referenceFrame
-     * @param event
-     */
-    igv.SegTrack.prototype.altClick = function (genomicLocation, referenceFrame, event) {
-
-        // Define a region 5 "pixels" wide in genomic coordinates
-        var bpWidth = referenceFrame.toBP(2.5);
-
-        this.sortSamples(referenceFrame.chrName, genomicLocation - bpWidth, genomicLocation + bpWidth, sortDirection);
-
-        sortDirection = (sortDirection === "ASC" ? "DESC" : "ASC");
-    };
-
-    igv.SegTrack.prototype.popupDataWithConfiguration = function (config) {
-        return this.popupData(config.genomicLocation, config.x, config.y, config.viewport.genomicState.referenceFrame)
-    };
-
-    igv.SegTrack.prototype.popupData = function (genomicLocation, xOffset, yOffset, referenceFrame) {
-
-        var sampleHeight = ("SQUISHED" === this.displayMode) ? this.sampleSquishHeight : this.sampleExpandHeight,
-            sampleName,
-            row,
-            items;
-
-        row = Math.floor(yOffset / sampleHeight);
-
-        if (row < this.sampleNames.length) {
-
-            sampleName = this.sampleNames[row];
-
-            items = [
-                {name: "Sample", value: sampleName}
-            ];
-
-            // We use the featureCache property rather than method to avoid async load.  If the
-            // feature is not already loaded this won't work,  but the user wouldn't be mousing over it either.
-            if (this.featureSource.featureCache) {
-                var chr = referenceFrame.chrName;  // TODO -- this should be passed in
-                var featureList = this.featureSource.featureCache.queryFeatures(chr, genomicLocation, genomicLocation);
-                featureList.forEach(function (f) {
-                    if (f.sample === sampleName) {
-                        items.push({name: "Value", value: f.value});
-                    }
-                });
-            }
-
-            return items;
         }
 
-        return null;
-    };
+        const sortMut = () => {
+            // Compute weighted average score for each sample
+            for (let segment of featureList) {
+                if (segment.end < start) continue;
+                if (segment.start > end) break;
+                const sampleKey = segment.sampleKey || segment.sample
+                if (!scores.hasOwnProperty(sampleKey) || segment.value.localeCompare(scores[sampleKey]) > 0) {
+                    scores[sampleKey] = segment.value;
+                }
+            }
+            // Now sort sample names by score
+            this.sampleKeys.sort(function (a, b) {
+                let sa = scores[a] || "";
+                let sb = scores[b] || ""
+                return d2 * (sa.localeCompare(sb));
+            });
+        }
 
-    igv.SegTrack.prototype.popupMenuItemList = function (config) {
+        if ("mut" === this.type) {
+            sortMut();
+        } else {
+            sortSeg();
+        }
 
-        var self = this,
-            $e,
-            clickHandler;
+        this.trackView.repaintViews();
+        // self.trackView.$viewport.scrollTop(0);
+    }
 
-        $e = $('<div>');
-        $e.text('Sort by value');
+    clickedFeatures(clickState, features) {
 
-        clickHandler = function () {
+        const allFeatures = super.clickedFeatures(clickState, features);
+        return filterByRow(allFeatures, clickState.y);
 
-            self.altClick(config.genomicLocation, config.viewport.genomicState.referenceFrame);
+        function filterByRow(features, y) {
 
-            config.popover.hide();
+            return features.filter(function (feature) {
+                const rect = feature.pixelRect;
+                return rect && y >= rect.y && y <= (rect.y + rect.h);
+            });
 
-        };
+        }
+    }
 
-        return [{ name: undefined, object: $e, click: clickHandler, init: undefined }];
+    popupData(clickState, featureList) {
 
-    };
+        featureList = this.clickedFeatures(clickState);
 
-    return igv;
+        const items = [];
 
-})(igv || {});
+        for (let feature of featureList) {
+            if (items.length > 0) {
+                items.push('<hr/>')
+            }
+
+            if (typeof feature.popupData === 'function') {
+                const data = feature.popupData()
+                Array.prototype.push.apply(items, data);
+            } else {
+                const filteredProperties = new Set(['chr', 'start', 'end', 'sample', 'value', 'row', 'color', 'sampleKey',
+                    'uniqueSampleKey', 'sampleId', 'chromosome', 'uniquePatientKey']);
+
+                // hack for whole genome features, which save the original feature as "_f"
+                const f = feature._f || feature;
+                items.push({name: 'Sample', value: f.sample})
+                const valueString = this.type === 'seg' ? StringUtils.numberFormatter(f.value) : f.value;
+                items.push({name: 'Value', value: valueString});
+                const locus = `${f.chr}:${StringUtils.numberFormatter(f.start + 1)}-${StringUtils.numberFormatter(f.end)}`;
+                items.push({name: 'Locus', value: locus})
+                items.push('<hr/>')
+                for (let property of Object.keys(f)) {
+                    if (!filteredProperties.has(property) && isSimpleType(f[property])) {
+                        items.push({name: property, value: f[property]});
+                    }
+                }
+            }
+        }
+
+        return items;
+    }
+
+    contextMenuItemList(clickState) {
+
+        const referenceFrame = clickState.viewport.referenceFrame;
+        const genomicLocation = clickState.genomicLocation;
+
+        // Define a region 5 "pixels" wide in genomic coordinates
+        const sortDirection = this.config.sort ?
+            (this.config.sort.direction === "ASC" ? "DESC" : "ASC") :      // Toggle from previous sort
+            "DESC";
+        const bpWidth = referenceFrame.toBP(2.5);
+
+        const sortHandler = (sort) => {
+            const viewport = clickState.viewport;
+            const features = viewport.getCachedFeatures();
+            this.sortSamples(sort.chr, sort.start, sort.end, sort.direction, features);
+        }
+
+        const sortLabel = this.type === 'seg' ? 'Sort by value' : 'Sort by type'
+
+        return [
+            {
+                label: sortLabel, click: (e) => {
+
+
+                    const sort = {
+                        direction: sortDirection,
+                        chr: clickState.viewport.referenceFrame.chr,
+                        start: genomicLocation - bpWidth,
+                        end: genomicLocation + bpWidth
+
+                    };
+
+                    sortHandler(sort);
+
+                    this.config.sort = sort;
+
+                }
+            }];
+
+    }
+
+    supportsWholeGenome() {
+        return (this.config.indexed === false || !this.config.indexURL) && this.config.supportsWholeGenome !== false
+    }
+
+    updateSampleKeys(featureList) {
+
+        if (this.explicitSamples) return;
+
+        for (let feature of featureList) {
+            const sampleKey = feature.sampleKey || feature.sample;
+            if (!this.sampleNames.has(sampleKey)) {
+                this.sampleNames.set(sampleKey, feature.sample);
+                this.sampleKeys.push(sampleKey);
+            }
+        }
+    }
+}
+
+// Mut and MAF file default color table
+
+const MUT_COLORS = {
+
+    "indel": "rgb(0,200,0)",
+    "targeted region": "rgb(236,155,43)",
+    "truncating": "rgb(	150,0,0)",
+    "non-coding transcript": "rgb(0,0,150)",
+
+    // Colors from https://www.nature.com/articles/nature11404
+    "synonymous": "rgb(109,165,95)",
+    "silent": "rgb(109,135,80)",
+    "missense_mutation": "rgb(72,130,187)",
+    "missense": "rgb(72,130,187)",
+    "splice site": "rgb(143,83,155)",
+    "splice_region": "rgb(143,83,155)",
+    "nonsense": "rgb(216, 57,81)",
+    "nonsense_mutation": "rgb(216, 57,81)",
+    "frame_shift_del": "rgb(226,135,65)",
+    "frame_shift_ins": "rgb(226,135,65)",
+    "in_frame_del": "rgb(247,235,94)",
+    "in_frame_ins": "rgb(247,235,94)",
+    "*other*": "rgb(159,91,50)"
+    //
+    // 3'Flank
+    // 3'UTR
+    // 5'Flank
+    // 5'UTR
+    // Frame_Shift_Del
+    // Frame_Shift_Ins
+    // IGR
+    // In_Frame_Del
+    // In_Frame_Ins
+    // Intron
+    // Missense_Mutation
+    // Nonsense_Mutation
+    // Nonstop_Mutation
+    // RNA
+    // Silent
+    // Splice_Region
+    // Splice_Site
+    // Translation_Start_Site
+    // Variant_Classification
+
+}
+
+export default SegTrack

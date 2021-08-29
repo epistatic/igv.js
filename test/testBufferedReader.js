@@ -1,30 +1,21 @@
-function runBufferedReaderTests() {
+import "./utils/mockObjects.js"
+import BufferedReader from "../js/bigwig/bufferedReader.js";
+import {assert} from 'chai';
 
-    var dataURL = "https://data.broadinstitute.org/igvdata/test/data/";
+suite("testBigWig", function () {
 
-    asyncTest("read", function () {
+    test("read", async function () {
 
-        var url = dataURL + "misc/BufferedReaderTest.bin";
-        var range = {start: 25, size: 100};
-        var bufferedReader = new igv.BufferedReader({url: url}, 256, 16);
+        const url = require.resolve('./data/misc/BufferedReaderTest.bin');
+        const range = {start: 25, size: 100};
+        const bufferedReader = new BufferedReader({url: url}, 16);
 
-        bufferedReader.dataViewForRange(range).then(function (dataView) {
-
-            var i;
-
-            ok(dataView);
-
-            for (i = 0; i < range.size; i++) {
-                var expectedValue = -128 + range.start + i;
-                var value = dataView.getInt8(i);
-                equal(expectedValue, value);
-            }
-
-            start();
-        }).catch(function (error) {
-            console.log(error);
-            ok(false);
-        });
-
-    });
-}
+        const dataView = await bufferedReader.dataViewForRange(range);
+        assert.ok(dataView);
+        for (let i = 0; i < range.size; i++) {
+            var expectedValue = -128 + range.start + i;
+            var value = dataView.getInt8(i);
+            assert.equal(expectedValue, value);
+        }
+    })
+})

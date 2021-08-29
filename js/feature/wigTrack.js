@@ -23,294 +23,247 @@
  * THE SOFTWARE.
  */
 
-/**
- * Created by turner on 2/11/14.
- */
-var igv = (function (igv) {
+import FeatureSource from './featureSource.js';
+import TDFSource from "../tdf/tdfSource.js";
+import TrackBase from "../trackBase.js";
+import BWSource from "../bigwig/bwSource.js";
+import IGVGraphics from "../igv-canvas.js";
+import paintAxis from "../util/paintAxis.js";
+import {IGVColor, StringUtils} from "../../node_modules/igv-utils/src/index.js";
+import MenuUtils from "../ui/menuUtils.js";
 
-    igv.WIGTrack = function (config) {
+const DEFAULT_COLOR = "rgb(150,150,150)";
 
-        this.config = config;
-        this.url = config.url;
+class WigTrack extends TrackBase {
 
-        if (config.color === undefined) config.color = "rgb(150,150,150)";   // Hack -- should set a default color per track type
-        if (config.graphType === undefined) config.graphType = "bar";
-        if (config.yLines === undefined) config.yLines = [];
+    constructor(config, browser) {
+        super(config, browser);
+    }
 
-        igv.configTrack(this, config);
+    init(config) {
+        super.init(config);
 
-        if ("bigwig" === config.format) {
-            this.featureSource = new igv.BWSource(config);
-        } else if ("tdf" === config.format) {
-            this.featureSource = new igv.TDFSource(config);
+        this.type = "wig";
+        this.height = config.height || 50;
+        this.featureType = 'numeric';
+        this.paintAxis = paintAxis;
+
+        const format = config.format ? config.format.toLowerCase() : config.format;
+        if ("bigwig" === format) {
+            this.featureSource = new BWSource(config, this.browser.genome);
+        } else if ("tdf" === format) {
+            this.featureSource = new TDFSource(config, this.browser.genome);
         } else {
-            this.featureSource = new igv.FeatureSource(config);
+            this.featureSource = FeatureSource(config, this.browser.genome);
         }
 
-        // Min and max values.  No defaults for these, if they aren't set track will autoscale.
-        this.autoscale = config.autoscale;
-
-        if(config.max) {
+        this.autoscale = config.autoscale || config.max === undefined;
+        if (!this.autoscale) {
             this.dataRange = {
                 min: config.min || 0,
                 max: config.max
             }
+        }
+
+        this.windowFunction = config.windowFunction || "mean";
+        this.graphType = config.graphType || "bar";
+        this.normalize = config.normalize;  // boolean, for use with "TDF" files
+        this.scaleFactor = config.scaleFactor;  // optional scale factor, ignored if normalize === true;
+    }
+
+    async postInit() {
+        const header = await this.getHeader();
+        if (header) this.setTrackProperties(header)
+    }
+
+    async getFeatures(chr, start, end, bpPerPixel) {
+        const features = await this.featureSource.getFeatures({chr, start, end, bpPerPixel, windowFunction: this.windowFunction});
+        if(this.normalize && this.featureSource.normalizationFactor) {
+            const scaleFactor = this.featureSource.normalizationFactor;
+            for(let f of features) {
+                f.value *= scaleFactor;
+            }
+        }
+        if(this.scaleFactor) {
+            const scaleFactor = this.scaleFactor;
+            for(let f of features) {
+                f.value *= scaleFactor;
+            }
+        }
+        return features;
+    }
+
+    menuItemList() {
+        return MenuUtils.numericDataMenuItems(this.trackView)
+    }
+
+    async getHeader() {
+
+        if (typeof this.featureSource.getHeader === "function") {
+            this.header = await this.featureSource.getHeader();
+        }
+        return this.header;
+    }
+
+    draw(options) {
+
+        const features = options.features;
+        const ctx = options.context;
+        const bpPerPixel = options.bpPerPixel;
+        const bpStart = options.bpStart;
+        const pixelWidth = options.pixelWidth;
+        const pixelHeight = options.pixelHeight;
+        const bpEnd = bpStart + pixelWidth * bpPerPixel + 1;
+        let lastPixelEnd = -1;
+        let lastValue = -1;
+        let lastNegValue = 1;
+        const posColor = this.color || DEFAULT_COLOR;
+
+        let baselineColor;
+        if (typeof posColor === "string" && posColor.startsWith("rgb(")) {
+            baselineColor = IGVColor.addAlpha(posColor, 0.1);
+        }
+
+        const yScale = (yValue) => {
+            return ((this.dataRange.max - yValue) / (this.dataRange.max - this.dataRange.min)) * pixelHeight
         };
 
-        this.paintAxis = igv.paintAxis;
+        if (features && features.length > 0) {
 
-    };
+            if (this.dataRange.min === undefined) this.dataRange.min = 0;
 
-    igv.WIGTrack.prototype.getFeatures = function (chr, bpStart, bpEnd, bpPerPixel) {
+            // Max can be less than min if config.min is set but max left to autoscale.   If that's the case there is
+            // nothing to paint.
+            if (this.dataRange.max > this.dataRange.min) {
 
-        var self = this;
-        return new Promise(function (fulfill, reject) {
-            self.featureSource.getFeatures(chr, bpStart, bpEnd, bpPerPixel).then(fulfill).catch(reject);
-        });
-    };
+                const y0 = this.dataRange.min == 0 ? pixelHeight : yScale(0);
+                for (let f of features) {
 
-    igv.WIGTrack.prototype.menuItemList = function (popover) {
+                    if (f.end < bpStart) continue;
+                    if (f.start > bpEnd) break;
 
-        var self = this,
-            menuItems = [];
+                    const x = Math.floor((f.start - bpStart) / bpPerPixel)
+                    if (isNaN(x)) continue;
 
-        menuItems.push(igv.colorPickerMenuItem(popover, this.trackView));
+                    let y = yScale(f.value);
 
-        menuItems.push(igv.dataRangeMenuItem(popover, this.trackView));
+                    const rectEnd = Math.ceil((f.end - bpStart) / bpPerPixel);
+                    const width = Math.max(1, rectEnd - x);
 
-        menuItems.push({
-            object: $(htmlStringified(self.autoscale)),
-            click: function () {
-                var $fa = $(this).find('i');
+                    let c = (f.value < 0 && this.altColor) ? this.altColor : posColor;
+                    const color = (typeof c === "function") ? c(f.value) : c;
 
-                popover.hide();
+                    if (this.graphType === "points") {
+                        const pointSize = this.config.pointSize || 3;
+                        const px = x + width / 2;
+                        IGVGraphics.fillCircle(ctx, px, y, pointSize / 2, {"fillStyle": color, "strokeStyle": color});
 
-                self.autoscale = !self.autoscale;
-
-                if (true === self.autoscale) {
-                    $fa.removeClass('fa-check-hidden');
-                } else {
-                    $fa.addClass('fa-check-hidden');
+                    } else {
+                        let height = y - y0;
+                        if ((Math.abs(height)) < 1) {
+                            height = height < 0 ? -1 : 1
+                        }
+                        const pixelEnd = x + width;
+                        if (pixelEnd > lastPixelEnd || (f.value >= 0 && f.value > lastValue) || (f.value < 0 && f.value < lastNegValue)) {
+                            IGVGraphics.fillRect(ctx, x, y0, width, height, {fillStyle: color});
+                        }
+                        lastValue = f.value;
+                        lastPixelEnd = pixelEnd;
+                    }
                 }
 
-                self.trackView.update();
+                // If the track includes negative values draw a baseline
+                if (this.dataRange.min < 0) {
+                    const basepx = (this.dataRange.max / (this.dataRange.max - this.dataRange.min)) * options.pixelHeight;
+                    IGVGraphics.strokeLine(ctx, 0, basepx, options.pixelWidth, basepx, {strokeStyle: baselineColor});
+                }
             }
-        });
-
-        function htmlStringified(autoscale) {
-            var html = [];
-
-            html.push('<div>');
-            html.push(true === autoscale ? '<i class="fa fa-check">' : '<i class="fa fa-check fa-check-hidden">');
-            html.push('</i>');
-            html.push('Autoscale');
-            html.push('</div>');
-
-            return html.join('');
         }
 
-        return menuItems;
-
-    };
-
-    igv.WIGTrack.prototype.getFileHeader = function () {
-
-        var self = this;
-        return new Promise(function (fulfill, reject) {
-            if (typeof self.featureSource.getFileHeader === "function") {
-
-                self.featureSource.getFileHeader().then(function (header) {
-
-                    if (header) {
-                        // Header (from track line).  Set properties,unless set in the config (config takes precedence)
-                        if (header.name && !self.config.name) {
-                            self.name = header.name;
-                        }
-                        if (header.color && !self.config.color) {
-                            self.color = "rgb(" + header.color + ")";
-                        }
-                    }
-                    fulfill(header);
-
-                }).catch(reject);
+        // Draw guidelines
+        if (this.config.hasOwnProperty('guideLines')) {
+            for (let line of this.config.guideLines) {
+                if (line.hasOwnProperty('color') && line.hasOwnProperty('y') && line.hasOwnProperty('dotted')) {
+                    let y = yScale(line.y);
+                    let props = {
+                        'strokeStyle': line['color'],
+                        'strokeWidth': 2
+                    };
+                    if (line['dotted']) IGVGraphics.dashedLine(options.context, 0, y, options.pixelWidth, y, 5, props);
+                    else IGVGraphics.strokeLine(options.context, 0, y, options.pixelWidth, y, props);
+                }
             }
-            else {
-                fulfill(null);
-            }
-        });
-    };
+        }
+    }
 
-    igv.WIGTrack.prototype.draw = function (options) {
+    popupData(clickState, features) {
 
-        var self = this,
-            features = options.features,
-            ctx = options.context,
-            bpPerPixel = options.bpPerPixel,
-            bpStart = options.bpStart,
-            pixelWidth = options.pixelWidth,
-            pixelHeight = options.pixelHeight,
-            bpEnd = bpStart + pixelWidth * bpPerPixel + 1,
-            featureValueMinimum,
-            featureValueMaximum,
-            featureValueRange,
-            defaultRange
-            yLines = self.config.yLines;
+        // We use the featureCache property rather than method to avoid async load.  If the
+        // feature is not already loaded this won't work,  but the user wouldn't be mousing over it either.
 
+        features = this.clickedFeatures(clickState, features);
 
         if (features && features.length > 0) {
-            if(self.autoscale === undefined && self.dataRange === undefined && (typeof self.featureSource.getDefaultRange === "function")) {
-                defaultRange = self.featureSource.getDefaultRange();
-                if(!isNaN(defaultRange.min) && !isNaN(defaultRange.max)) {
-                    self.dataRange = defaultRange;
-                    console.log("Range= " + defaultRange.min + " - " + defaultRange.max);
+
+            const genomicLocation = clickState.genomicLocation;
+            const popupData = [];
+
+            // Sort features based on distance from click
+            features.sort(function (a, b) {
+                const distA = Math.abs((a.start + a.end) / 2 - genomicLocation);
+                const distB = Math.abs((b.start + b.end) / 2 - genomicLocation);
+                return distA - distB;
+            })
+
+            // Display closest 10
+            const displayFeatures = features.length > 10 ? features.slice(0, 10) : features;
+
+            // Resort in ascending order
+            displayFeatures.sort(function (a, b) {
+                return a.start - b.start;
+            })
+
+            for(let selectedFeature of displayFeatures) {
+                if (selectedFeature) {
+                    if(popupData.length > 0) {
+                        popupData.push('<hr/>')
+                    }
+                    let posString = (selectedFeature.end - selectedFeature.start) === 1 ?
+                        StringUtils.numberFormatter(selectedFeature.start + 1)
+                        : StringUtils.numberFormatter(selectedFeature.start + 1) + "-" + StringUtils.numberFormatter(selectedFeature.end);
+                    popupData.push({name: "Position:", value: posString});
+                    popupData.push({
+                        name: "Value:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;",
+                        value: StringUtils.numberFormatter(selectedFeature.value)
+                    });
                 }
             }
-            if (self.autoscale || self.dataRange === undefined) {
-                var s = autoscale(features);
-                featureValueMinimum = s.min;
-                featureValueMaximum = s.max;
-            }
-            else {
-                featureValueMinimum = self.dataRange.min === undefined ? 0 : self.dataRange.min;
-                featureValueMaximum = self.dataRange.max;
+            if(displayFeatures.length < features.length) {
+                popupData.push("<hr/>...");
             }
 
-            if (undefined === self.dataRange) {
-                self.dataRange = {};
-            }
-
-            self.dataRange.min = featureValueMinimum;  // Record for disply, menu, etc
-            self.dataRange.max = featureValueMaximum;
-
-            featureValueRange = featureValueMaximum - featureValueMinimum;
-
-            yLines.forEach(renderYLine);
-
-            if (self.config.graphType === "points") {
-                features.forEach(renderFeatureAsPoints);
-            }
-            else {
-                features.forEach(renderFeatureAsBar);
-            }
-
+            return popupData;
+            
+        } else {
+            return [];
         }
-
-        function renderFeatureAsBar(feature, index, featureList) {
-
-            var yUnitless,
-                heightUnitLess,
-                x,
-                y,
-                width,
-                height,
-                rectEnd,
-                rectBaseline;
-
-            if (feature.end < bpStart) return;
-            if (feature.start > bpEnd) return;
-
-            x = Math.floor((feature.start - bpStart) / bpPerPixel);
-            rectEnd = Math.ceil((feature.end - bpStart) / bpPerPixel);
-            width = Math.max(1, rectEnd - x);
-
-            //height = ((feature.value - featureValueMinimum) / featureValueRange) * pixelHeight;
-            //rectBaseline = pixelHeight - height;
-            //canvas.fillRect(rectOrigin, rectBaseline, rectWidth, rectHeight, {fillStyle: track.color});
-
-            if (signsDiffer(featureValueMinimum, featureValueMaximum)) {
-
-                if (feature.value < 0) {
-                    yUnitless = featureValueMaximum / featureValueRange;
-                    heightUnitLess = -feature.value / featureValueRange;
-                } else {
-                    yUnitless = ((featureValueMaximum - feature.value) / featureValueRange);
-                    heightUnitLess = feature.value / featureValueRange;
-                }
-
-            }
-            else if (featureValueMinimum < 0) {
-                yUnitless = 0;
-                heightUnitLess = -feature.value / featureValueRange;
-            }
-            else {
-                yUnitless = 1.0 - feature.value / featureValueRange;
-                heightUnitLess = feature.value / featureValueRange;
-            }
-
-            //canvas.fillRect(x, yUnitless * pixelHeight, width, heightUnitLess * pixelHeight, { fillStyle: igv.randomRGB(64, 255) });
-            igv.graphics.fillRect(ctx, x, yUnitless * pixelHeight, width, heightUnitLess * pixelHeight, {fillStyle: self.color});
-
-        }
-
-        function renderFeatureAsPoints(feature, index, featureList) {
-
-            var yUnitless,
-                x,
-                y,
-                width,
-                height,
-                rectEnd,
-                rectBaseline;
-
-            if (feature.end < bpStart) return;
-            if (feature.start > bpEnd) return;
-
-            x = Math.floor((feature.start - bpStart) / bpPerPixel);
-            rectEnd = Math.ceil((feature.end - bpStart) / bpPerPixel);
-            width = Math.max(1, rectEnd - x);
-            height = 2
-
-            yUnitless = 1 - (feature.value - featureValueMinimum) / featureValueRange
-
-            igv.graphics.fillRect(ctx, x, yUnitless * pixelHeight, width, height, {fillStyle: self.color});
-
-        }
-
-        function renderYLine(yLine, index, yLineList) {
-
-            var yUnitless,
-                x,
-                width,
-                height,
-                rectEnd,
-                rectBaseline;
-
-            if (yLine < bpStart) featureValueMinimum;
-            if (yLine > bpEnd) featureValueMaximum;
-
-            x = 0;
-            rectEnd = Math.ceil(bpEnd / bpPerPixel);
-            width = Math.max(1, rectEnd);
-            height = 1
-
-            yUnitless = 1 - (yLine - featureValueMinimum) / featureValueRange
-
-            igv.graphics.fillRect(ctx, x, yUnitless * pixelHeight, width, height, {fillStyle: "rgb(0,205,255)"});
-
-        }
-
-    };
-
-    function autoscale(features) {
-        var min = 0,
-            max = -Number.MAX_VALUE;
-
-        features.forEach(function (f) {
-            if(!Number.isNaN(f.value)) {
-                min = Math.min(min, f.value);
-                max = Math.max(max, f.value);
-            }
-        });
-
-        return {min: min, max: max};
-
     }
 
-    function signsDiffer(a, b) {
-        return (a > 0 && b < 0 || a < 0 && b > 0);
+    supportsWholeGenome  () {
+        if (typeof this.featureSource.supportsWholeGenome === 'function') {
+            return this.featureSource.supportsWholeGenome();
+        } else {
+            return false;
+        }
     }
 
+    /**
+     * Called when the track is removed.  Do any needed cleanup here
+     */
+    dispose() {
+        this.trackView = undefined;
+    }
+}
 
-    return igv;
 
-})(igv || {});
+export default WigTrack;

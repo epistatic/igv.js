@@ -24,106 +24,146 @@
  * THE SOFTWARE.
  */
 
-/**
- * Created by jrobinson on 4/15/16.
- */
+import $ from "../vendor/jquery-3.3.1.slim.js";
+import FeatureSource from '../feature/featureSource.js';
+import TrackBase from "../trackBase.js";
+import IGVGraphics from "../igv-canvas.js";
+import {createCheckbox} from "../igv-icons.js";
+import {StringUtils} from "../../node_modules/igv-utils/src/index.js";
+import {PaletteColorTable, ColorTable} from "../util/colorPalletes.js";
 
-var igv = (function (igv) {
-
-    var vGap = 2;
-    var DEFAULT_VISIBILITY_WINDOW = 100000;
-
-    igv.VariantTrack = function (config) {
+const isString = StringUtils.isString;
 
 
-        this.visibilityWindow = config.visibilityWindow === undefined ? 'compute' : config.visibilityWindow;
+const DEFAULT_VISIBILITY_WINDOW = 1000000;
+const TOP_MARGIN = 10;
 
-        igv.configTrack(this, config);
+class VariantTrack extends TrackBase {
 
+    constructor(config, browser) {
+        super(config, browser);
+    }
+
+    init(config) {
+
+        super.init(config);
+
+        this.visibilityWindow = config.visibilityWindow;
         this.displayMode = config.displayMode || "EXPANDED";    // COLLAPSED | EXPANDED | SQUISHED
         this.labelDisplayMode = config.labelDisplayMode;
-
-        this.variantHeight = config.variantHeight || 10;
+        this.expandedVariantHeight = config.expandedVariantHeight || config.variantHeight || 10;
+        this.squishedVariantHeight = config.squishedVariantHeight || 2;
         this.squishedCallHeight = config.squishedCallHeight || 1;
         this.expandedCallHeight = config.expandedCallHeight || 10;
-
+        this.expandedVGap = config.expandedVGap !== undefined ? config.expandedVGap : 2;
+        this.squishedVGap = config.squishedVGap !== undefined ? config.squishedVGap : 1;
+        this.expandedGroupGap = config.expandedGroupGap || 10;
+        this.squishedGroupGap = config.squishedGroupGap || 5;
         this.featureHeight = config.featureHeight || 14;
-
-        this.featureSource = new igv.FeatureSource(config);
-
-        this.homrefColor = config.homrefColor || "rgb(200, 200, 200)"
+        this.visibilityWindow = config.visibilityWindow;
+        this.featureSource = FeatureSource(config, this.browser.genome);
+        this.noGenotypeColor = config.noGenotypeColor || "rgb(200,180,180)"
+        this.noCallColor = config.noCallColor || "rgb(225, 225, 225)";
+        this.nonRefColor = config.nonRefColor || "rgb(200, 200, 215)";
+        this.mixedColor = config.mixedColor || "rgb(200, 220, 200)";
+        this.homrefColor = config.homrefColor || "rgb(200, 200, 200)";
         this.homvarColor = config.homvarColor || "rgb(17,248,254)";
         this.hetvarColor = config.hetvarColor || "rgb(34,12,253)";
+        this.sortDirection = "ASC";
+        this.type = config.type || "variant"
+        if (config.colorBy) {
+            if (isString(config.colorBy)) {
+                this.colorBy = config.colorBy;   // Can be undefined => default
+                this._initColorBy = config.colorBy;
+                if (config.colorTable) {
+                    this.colorTables = new Map();
+                    this.colorTables.set(config.colorBy, new ColorTable(config.colorTable));
+                }
+            } else if (config.colorBy.field) {
 
-        this.nRows = 1;  // Computed dynamically
-
-    };
-
-
-    igv.VariantTrack.prototype.getFileHeader = function () {
-        var self = this;
-
-        return new Promise(function (fulfill, reject) {
-            if (typeof self.featureSource.getFileHeader === "function") {
-                self.featureSource.getFileHeader().then(function (header) {
-                    if (header) {
-                        // Header (from track line).  Set properties,unless set in the config (config takes precedence)
-                        if (header.name && !self.config.name) {
-                            self.name = header.name;
-                        }
-                        if (header.color && !self.config.color) {
-                            self.color = "rgb(" + header.color + ")";
-                        }
-                        self.callSets = header.callSets;
-
-                        if ('compute' === self.visibilityWindow) {
-                            computeVisibilityWindow.call(self);
-                        }
-                    }
-                    fulfill(header);
-
-                }).catch(reject);
+            } else {
+                console.warn("Unrecognized colorBy option: " + config.colorBy);
             }
-            else {
-                fulfill(null);
-            }
-        });
+
+        }
+        this._color = config.color;
+        this.showGenotypes = config.showGenotypes === undefined ? true : config.showGenotypes;
+
+        // The number of variant rows are computed dynamically, but start with "1" by default
+        this.variantRowCount(1);
+
     }
 
+    async postInit() {
 
-    function computeVisibilityWindow() {
-
-        if (this.callSets) {
-            if (this.callSets.length < 10) {
+        this.header = await this.getHeader();   // cricital, don't remove'
+        if (undefined === this.visibilityWindow && this.config.indexed !== false) {
+            const fn = this.config.url instanceof File ? this.config.url.name : this.config.url;
+            if (isString(fn) && fn.toLowerCase().includes("gnomad")) {
+                this.visibilityWindow = 1000;  // these are known to be very dense
+            } else if (this.callSets) {
+                const length = this.callSets.length;
+                this.visibilityWindow = Math.max(1000, DEFAULT_VISIBILITY_WINDOW - length * (DEFAULT_VISIBILITY_WINDOW / 100));
+            } else {
                 this.visibilityWindow = DEFAULT_VISIBILITY_WINDOW;
             }
-            else {
-                this.visibilityWindow = 1000 + ((2500 / this.callSets.length) * 40);
+        }
+        return this;
+
+    }
+
+    supportsWholeGenome() {
+        return this.config.indexed === false && this.config.supportsWholeGenome !== false
+    }
+
+    get color() {
+        return this._color;
+    }
+
+    set color(c) {
+        this._color = c;
+        this.colorBy = undefined;
+    }
+
+    async getHeader() {
+
+        if (!this.header) {
+            if (typeof this.featureSource.getHeader === "function") {
+                const header = await this.featureSource.getHeader()
+                if (header) {
+                    this.callSets = header.callSets || [];
+                }
+                this.header = header;
             }
-        }
-        else {
-            this.visibilityWindow = DEFAULT_VISIBILITY_WINDOW;
+            this.sampleNames = this.callSets ? this.callSets.map(cs => cs.name) : [];
         }
 
-        this.featureSource.visibilityWindow = this.visibilityWindow;
-
-
+        return this.header;
     }
 
-    igv.VariantTrack.prototype.getFeatures = function (chr, bpStart, bpEnd) {
-
-        var self = this;
-
-        return new Promise(function (fulfill, reject) {
-
-            self.featureSource.getFeatures(chr, bpStart, bpEnd).then(function (features) {
-                fulfill(features);
-            }).catch(reject);
-
-        });
+    getCallsetsLength() {
+        return this.callSets ? this.callSets.length : 0;
     }
 
+    async getFeatures(chr, start, end, bpPerPixel) {
 
+        if (this.header === undefined) {
+            this.header = await this.getHeader();
+        }
+        return this.featureSource.getFeatures({chr, start, end, bpPerPixel, visibilityWindow: this.visibilityWindow});
+    }
+
+    hasSamples() {
+        return this.getCallsetsLength() > 0;
+    }
+
+    getSamples() {
+        return {
+            yOffset: this.sampleYOffset,
+            names: this.sampleNames,
+            height: this.sampleHeight
+        }
+    }
 
     /**
      * The required height in pixels required for the track content.   This is not the visible track height, which
@@ -132,308 +172,471 @@ var igv = (function (igv) {
      * @param features
      * @returns {*}
      */
-    igv.VariantTrack.prototype.computePixelHeight = function (features) {
+    computePixelHeight(features) {
 
-        var callSets = this.callSets,
-            nCalls = callSets ? callSets.length : 0,
-            nRows,
-            h;
+        if (!features || features.length == 0) return TOP_MARGIN;
 
-        if (this.displayMode === "COLLAPSED") {
-            this.nRows = 1;
-            return 10 + this.variantHeight;
-        }
-        else {
-            var maxRow = 0;
-            if (features && (typeof features.forEach === "function")) {
-                features.forEach(function (feature) {
-                    if (feature.row && feature.row > maxRow) maxRow = feature.row;
+        const nVariantRows = (this.displayMode === "COLLAPSED") ? 1 : this.nVariantRows;
+        const vGap = (this.displayMode === "SQUISHED") ? this.squishedVGap : this.expandedVGap;
+        const variantHeight = (this.displayMode === "SQUISHED") ? this.squishedVariantHeight : this.expandedVariantHeight;
+        const callHeight = (this.displayMode === "SQUISHED") ? this.squishedCallHeight : this.expandedCallHeight;
+        const nCalls = this.showGenotypes === false ? 0 : this.getCallsetsLength() * nVariantRows;
+        const h = TOP_MARGIN + nVariantRows * (variantHeight + vGap);
+        return h + vGap + (nCalls + 1) * (callHeight + vGap);
 
-                });
-            }
-            nRows = maxRow + 1;
+    }
 
-            h = 10 + nRows * (this.variantHeight + vGap);
-            this.nRows = nRows;  // Needed in draw function
+    variantRowCount(count) {
+        this.nVariantRows = count;
+    }
 
+    draw({context, pixelWidth, pixelHeight, bpPerPixel, bpStart, pixelTop, features}) {
 
-            if ((nCalls * nRows * this.expandedCallHeight) > 2000) {
-                this.expandedCallHeight = Math.max(1, 2000 / (nCalls * nRows));
-            }
+        IGVGraphics.fillRect(context, 0, pixelTop, pixelWidth, pixelHeight, {'fillStyle': "rgb(255, 255, 255)"});
 
+        const vGap = ("SQUISHED" === this.displayMode) ? this.squishedVGap : this.expandedVGap;
+        const rc = ("COLLAPSED" === this.displayMode) ? 1 : this.nVariantRows;
+        const variantHeight = ("SQUISHED" === this.displayMode) ? this.squishedVariantHeight : this.expandedVariantHeight;
+        this.variantBandHeight = TOP_MARGIN + rc * (variantHeight + vGap);
 
-            return h + vGap + nCalls * nRows * (this.displayMode === "EXPANDED" ? this.expandedCallHeight : this.squishedCallHeight);
-
-        }
-
-    };
-
-    igv.VariantTrack.prototype.draw = function (options) {
-
-        var featureList = options.features,
-            ctx = options.context,
-            bpPerPixel = options.bpPerPixel,
-            bpStart = options.bpStart,
-            pixelWidth = options.pixelWidth,
-            pixelHeight = options.pixelHeight,
-            bpEnd = bpStart + pixelWidth * bpPerPixel + 1,
-            callHeight = ("EXPANDED" === this.displayMode ? this.expandedCallHeight : this.squishedCallHeight),
-            px, px1, pw, py, h, style, i, variant, call, callSet, j, allRef, allVar, callSets;
-
-        this.variantBandHeight = 10 + this.nRows * (this.variantHeight + vGap);
-
-        callSets = this.callSets;
-
-        igv.graphics.fillRect(ctx, 0, 0, pixelWidth, pixelHeight, {'fillStyle': "rgb(255, 255, 255)"});
-
-        if (callSets && callSets.length > 0 && "COLLAPSED" !== this.displayMode) {
-            igv.graphics.strokeLine(ctx, 0, this.variantBandHeight, pixelWidth, this.variantBandHeight, {strokeStyle: 'rgb(224,224,224) '});
+        const callSets = this.callSets;
+        const nCalls = this.getCallsetsLength();
+        if (callSets && nCalls > 0 && this.showGenotypes !== false) {
+            IGVGraphics.strokeLine(context, 0, this.variantBandHeight, pixelWidth, this.variantBandHeight, {strokeStyle: 'rgb(224,224,224) '});
         }
 
-        if (featureList) {
-            for (i = 0, len = featureList.length; i < len; i++) {
-                variant = featureList[i];
+        if (features) {
+
+            const callHeight = ("SQUISHED" === this.displayMode) ? this.squishedCallHeight : this.expandedCallHeight;
+            const vGap = ("SQUISHED" === this.displayMode) ? this.squishedVGap : this.expandedVGap;
+            const bpEnd = bpStart + pixelWidth * bpPerPixel + 1;
+
+            // Loop through variants.  A variant == a row in a VCF file
+            for (let variant of features) {
+
                 if (variant.end < bpStart) continue;
                 if (variant.start > bpEnd) break;
 
-                py = 10 + ("COLLAPSED" === this.displayMode ? 0 : variant.row * (this.variantHeight + vGap));
-                h = this.variantHeight;
+                const variantHeight = ("SQUISHED" === this.displayMode) ? this.squishedVariantHeight : this.expandedVariantHeight;
+                const y = TOP_MARGIN + ("COLLAPSED" === this.displayMode ? 0 : variant.row * (variantHeight + vGap));
+                const h = variantHeight;
 
-                px = Math.round((variant.start - bpStart) / bpPerPixel);
-                px1 = Math.round((variant.end - bpStart) / bpPerPixel);
-                pw = Math.max(1, px1 - px);
-                if (pw < 3) {
-                    pw = 3;
-                    px -= 1;
-                } else if (pw > 5) {
-                    px += 1;
-                    pw -= 2;
+                // Compute pixel width.   Minimum width is 3 pixels,  if > 5 pixels create gap between variants
+                let x = Math.round((variant.start - bpStart) / bpPerPixel);
+                let x1 = Math.round((variant.end - bpStart) / bpPerPixel);
+                let w = Math.max(1, x1 - x);
+                if (w < 3) {
+                    w = 3;
+                    x -= 1;
+                } else if (w > 5) {
+                    x += 1;
+                    w -= 2;
                 }
+                context.fillStyle = this.getVariantColor(variant);
+                context.fillRect(x, y, w, h)
+                variant.pixelRect = {x, y, w, h}
 
-                ctx.fillStyle = this.color;
-                ctx.fillRect(px, py, pw, h);
+                // Loop though the calls for this variant.  There will potentially be a call for each sample.
+                if (nCalls > 0 && this.showGenotypes !== false) {
 
+                    const nVariantRows = "COLLAPSED" === this.displayMode ? 1 : this.nVariantRows;
+                    this.sampleYOffset = this.variantBandHeight + vGap;
+                    this.sampleHeight = nVariantRows * (callHeight + vGap);  // For each sample, there is a call for each variant at this position
 
-                if (callSets && variant.calls && "COLLAPSED" !== this.displayMode) {
-                    h = callHeight;
-                    for (j = 0; j < callSets.length; j++) {
-                        callSet = callSets[j];
-                        call = variant.calls[callSet.id];
+                    let sampleNumber = 0;
+                    for (let callSet of callSets) {
+                        const call = variant.calls[callSet.id];
                         if (call) {
+                            const row = "COLLAPSED" === this.displayMode ? 0 : variant.row;
+                            const py = this.sampleYOffset + sampleNumber * this.sampleHeight + row * (callHeight + vGap);
+                            let allVar = true;  // until proven otherwise
+                            let allRef = true;
+                            let noCall = false;
 
-                            // Determine genotype
-                            allVar = allRef = true;  // until proven otherwise
-                            call.genotype.forEach(function (g) {
-                                if (g != 0) allRef = false;
-                                if (g == 0) allVar = false;
-                            });
-
-                            if (allRef) {
-                                ctx.fillStyle = this.homrefColor;
-                            } else if (allVar) {
-                                ctx.fillStyle = this.homvarColor;
-                            } else {
-                                ctx.fillStyle = this.hetvarColor;
+                            if (call.genotype) {
+                                for (let g of call.genotype) {
+                                    if ('.' === g) {
+                                        noCall = true;
+                                        break;
+                                    } else {
+                                        if (g !== 0) allRef = false;
+                                        if (g === 0) allVar = false;
+                                    }
+                                }
                             }
 
-                            py = this.variantBandHeight + vGap + (j + variant.row) * callHeight;
-                            ctx.fillRect(px, py, pw, h);
+                            if (!call.genotype) {
+                                context.fillStyle = this.noGenotypeColor;
+                            } else if (noCall) {
+                                context.fillStyle = this.noCallColor;
+                            } else if (allRef) {
+                                context.fillStyle = this.homrefColor;
+                            } else if (allVar) {
+                                context.fillStyle = this.homvarColor;
+                            } else {
+                                context.fillStyle = this.hetvarColor;
+                            }
+
+                            context.fillRect(x, py, w, callHeight)
+
+                            callSet.pixelRect = {x, y: py, w, h: callHeight}
                         }
+                        sampleNumber++;
                     }
+
                 }
             }
-        }
-        else {
+
+        } else {
             console.log("No feature list");
         }
-
     };
 
-    igv.VariantTrack.prototype.popupDataWithConfiguration = function (config) {
-        return this.popupData(config.genomicLocation, config.x, config.y, config.viewport.genomicState.referenceFrame)
-    };
+    getVariantColor(variant) {
+
+        let variantColor;
+
+        if (this.colorBy) {
+            const value = variant.info[this.colorBy];
+            variantColor = this.getVariantColorTable(this.colorBy).getColor(value);
+            if (!variantColor) {
+                variantColor = "gray";
+            }
+
+        } else if (this._color) {
+            variantColor = (typeof this._color === "function") ? this._color(variant) : this._color;
+        } else if ("NONVARIANT" === variant.type) {
+            variantColor = this.nonRefColor;
+        } else if ("MIXED" === variant.type) {
+            variantColor = this.mixedColor;
+        } else {
+            variantColor = this.defaultColor;
+        }
+        return variantColor;
+    }
 
     /**
      * Return "popup data" for feature @ genomic location.  Data is an array of key-value pairs
      */
-    igv.VariantTrack.prototype.popupData = function (genomicLocation, xOffset, yOffset, referenceFrame) {
+    popupData(clickState, featureList) {
 
-        // We use the featureCache property rather than method to avoid async load.  If the
-        // feature is not already loaded this won't work,  but the user wouldn't be mousing over it either.
-        if (this.featureSource.featureCache) {
+        featureList = this.clickedFeatures(clickState, featureList);
 
-            var chr = referenceFrame.chrName,
-                tolerance = Math.floor(2 * referenceFrame.bpPerPixel),  // We need some tolerance around genomicLocation, start with +/- 2 pixels
-                featureList = this.featureSource.featureCache.queryFeatures(chr, genomicLocation - tolerance, genomicLocation + tolerance),
-                popupData = [],
-                self = this;
+        const genomicLocation = clickState.genomicLocation
+        const genomeID = this.browser.genome.id
+        const sampleInformation = this.browser.sampleInformation;
+        const vGap = (this.displayMode === 'EXPANDED') ? this.expandedVGap : this.squishedVGap;
+        const callHeight = vGap + ("SQUISHED" === this.displayMode ? this.squishedCallHeight : this.expandedCallHeight);
 
+        // Find the variant row (i.e. row assigned during feature packing)
+        const yOffset = clickState.y;
+        let row;
+        let sampleRow;
+        if (yOffset <= this.variantBandHeight) {
+            // Variant
+            const variantHeight = ("SQUISHED" === this.displayMode) ? this.squishedVariantHeight : this.expandedVariantHeight;
+            row = (Math.floor)((yOffset - TOP_MARGIN) / (variantHeight + vGap));
+            sampleRow = -1;
+        } else {
+            const sampleY = yOffset - this.variantBandHeight;
+            sampleRow = Math.floor(sampleY / this.sampleHeight);
+            row = Math.floor((sampleY - sampleRow * this.sampleHeight) / callHeight);
+        }
+        const rowVariants = featureList.filter(f => f.row === row);
 
-            if (featureList && featureList.length > 0) {
+        let popupData = []
+        for (let variant of rowVariants) {
 
-                featureList.forEach(function (variant) {
+            if (popupData.length > 0) {
+                popupData.push({html: '<hr style="border-top-width:2px ;border-color: #c9c3ba" />'})
+            }
 
-                    var row, callHeight, callSets, cs, call;
+            if (yOffset <= this.variantBandHeight) {
+                const v = variant.popupData(genomicLocation, genomeID);
+                Array.prototype.push.apply(popupData, v);
+            } else {
+                // Callset
+                const callSets = this.callSets;
+                if (callSets && variant.calls) {
+                    if (sampleRow >= 0 && sampleRow < callSets.length) {
+                        const cs = callSets[sampleRow];
+                        const call = variant.calls[cs.id];
+                        Array.prototype.push.apply(popupData, extractGenotypePopupData(call, variant, genomeID, sampleInformation));
+                    }
+                }
 
-                    if ((variant.start <= genomicLocation + tolerance) &&
-                        (variant.end > genomicLocation - tolerance)) {
+            }
+        }
 
-                        if (popupData.length > 0) {
-                            popupData.push('<HR>')
+        return popupData;
+
+        /**
+         * Genotype popup text.
+         * @param call
+         * @param variant
+         * @returns {Array}
+         */
+        function extractGenotypePopupData(call, variant, genomeId, sampleInformation) {
+
+            let popupData = [];
+            if (call.callSetName !== undefined) {
+                popupData.push({name: 'Name', value: call.callSetName});
+            }
+
+            if (call.genotype) {
+                let gt = '';
+
+                if (variant.alternateBases === ".") {
+                    gt = "No Call";
+                } else {
+                    const altArray = variant.alternateBases.split(",")
+                    for (let allele of call.genotype) {
+                        if (gt.length > 0) {
+                            gt += "|";
                         }
-
-                        if ("COLLAPSED" == self.displayMode) {
-                            Array.prototype.push.apply(popupData, variant.popupData(genomicLocation));
-                        }
-                        else {
-                            if (yOffset <= self.variantBandHeight) {
-                                // Variant
-                                row = (Math.floor)((yOffset - 10 ) / (self.variantHeight + vGap));
-                                if (variant.row === row) {
-                                    Array.prototype.push.apply(popupData, variant.popupData(genomicLocation));
-                                }
-                            }
-                            else {
-                                // Call
-                                callSets = self.callSets;
-                                if (callSets && variant.calls) {
-                                    callHeight = self.nRows * ("SQUISHED" === self.displayMode ? self.squishedCallHeight : self.expandedCallHeight);
-                                    row = Math.floor((yOffset - self.variantBandHeight - vGap) / callHeight);
-                                    cs = callSets[row];
-                                    call = variant.calls[cs.id];
-                                    Array.prototype.push.apply(popupData, extractPopupData(call, variant));
-                                }
-                            }
+                        if ('.' === allele) {
+                            gt += '.';
+                        } else if (allele === 0) {
+                            gt += variant.referenceBases;
+                        } else {
+                            let alt = altArray[allele - 1].replace("<", "&lt;");
+                            gt += alt;
                         }
                     }
-                });
+                }
+                popupData.push({name: 'Genotype', value: gt});
             }
+
+
+            if (call.phaseset !== undefined) {
+                popupData.push({name: 'Phase set', value: call.phaseset});
+            }
+            if (call.genotypeLikelihood !== undefined) {
+                popupData.push({name: 'genotypeLikelihood', value: call.genotypeLikelihood.toString()});
+            }
+
+            if (sampleInformation) {
+                var attr = sampleInformation.getAttributes(call.callSetName);
+                if (attr) {
+                    Object.keys(attr).forEach(function (attrName) {
+                        var displayText = attrName.replace(/([A-Z])/g, " $1");
+                        displayText = displayText.charAt(0).toUpperCase() + displayText.slice(1);
+                        popupData.push({name: displayText, value: attr[attrName]});
+                    });
+                }
+            }
+
+            var infoKeys = Object.keys(call.info);
+            if (infoKeys.length) {
+                popupData.push('<hr/>');
+            }
+            infoKeys.forEach(function (key) {
+                popupData.push({name: key, value: decodeURIComponent(call.info[key])});
+            });
+
             return popupData;
         }
+
+    }
+
+
+// VariantTrack.prototype.contextMenuItemList = function (clickState) {
+//
+//     const self = this;
+//     const menuItems = [];
+//
+//     const featureList = this.clickedFeatures(clickState);
+//
+//     if (this.callSets && featureList && featureList.length > 0) {
+//
+//         featureList.forEach(function (variant) {
+//
+//             if ('str' === variant.type) {
+//
+//                 menuItems.push({
+//                     label: 'Sort by allele length',
+//                     click: function () {
+//                         sortCallSetsByAlleleLength(self.callSets, variant, self.sortDirection);
+//                         self.sortDirection = (self.sortDirection === "ASC") ? "DESC" : "ASC";
+//                         self.trackView.repaintViews();
+//                     }
+//                 });
+//
+//             }
+//
+//         });
+//     }
+//
+//
+//     function sortCallSetsByAlleleLength(callSets, variant, direction) {
+//         var d = (direction === "DESC") ? 1 : -1;
+//         Object.keys(callSets).forEach(function (property) {
+//             callSets[property].sort(function (a, b) {
+//                 var aNan = isNaN(variant.calls[a.id].genotype[0]);
+//                 var bNan = isNaN(variant.calls[b.id].genotype[0]);
+//                 if (aNan && bNan) {
+//                     return 0;
+//                 } else if (aNan) {
+//                     return 1;
+//                 } else if (bNan) {
+//                     return -1;
+//                 } else {
+//                     var a0 = getAlleleString(variant.calls[a.id], variant, 0);
+//                     var a1 = getAlleleString(variant.calls[a.id], variant, 1);
+//                     var b0 = getAlleleString(variant.calls[b.id], variant, 0);
+//                     var b1 = getAlleleString(variant.calls[b.id], variant, 1);
+//                     var result = Math.max(b0.length, b1.length) - Math.max(a0.length, a1.length);
+//                     if (result === 0) {
+//                         result = Math.min(b0.length, b1.length) - Math.min(a0.length, a1.length);
+//                     }
+//                     return d * result;
+//                 }
+//             });
+//         });
+//     }
+//
+//
+//     return menuItems;
+//
+// };
+
+    menuItemList() {
+
+        const menuItems = [];
+
+        // color-by INFO attribute
+        if (this.header.INFO) {
+            //Code below will present checkboxes for all info fields of type "String".   Wait until this is requested
+            //const stringInfoKeys = Object.keys(this.header.INFO).filter(key => "String" === this.header.INFO[key].Type);
+
+            // For now stick to explicit info fields (well, exactly 1 for starters)
+            if (this.header.INFO) {
+                //const stringInfoKeys = Object.keys(this.header.INFO).filter(key => this.header.INFO[key].Type === "String")
+                const stringInfoKeys = this.header.INFO.SVTYPE ? ['SVTYPE'] : [];
+                if (this._initColorBy && this._initColorBy !== 'SVTYPE') {
+                    stringInfoKeys.push(this._initColorBy);
+                }
+                if (stringInfoKeys.length > 0) {
+                    menuItems.push('<hr/>')
+                    const $e = $('<div class="igv-track-menu-category igv-track-menu-border-top">');
+                    $e.text('Color by:');
+                    menuItems.push({name: undefined, object: $e, click: undefined, init: undefined});
+                    stringInfoKeys.sort();
+                    for (let item of stringInfoKeys) {
+                        const selected = (this.colorBy === item);
+                        const label = item ? item : 'None';
+                        menuItems.push(this.colorByCB({key: item, label: label}, selected));
+                    }
+                    menuItems.push(this.colorByCB({key: undefined, label: 'None'}, this.colorBy === undefined));
+                    menuItems.push('<hr/>')
+                }
+            }
+        }
+
+        if (this.getCallsetsLength() > 0) {
+            menuItems.push({object: $('<div class="igv-track-menu-border-top">')});
+            menuItems.push({
+                object: $(createCheckbox("Show Genotypes", this.showGenotypes)),
+                click: () => {
+                    this.showGenotypes = !this.showGenotypes;
+                    //adjustTrackHeight();
+                    this.trackView.checkContentHeight();
+                    this.trackView.repaintViews();
+                }
+            })
+        }
+
+        menuItems.push({object: $('<div class="igv-track-menu-border-top">')});
+        for (let displayMode of ["COLLAPSED", "SQUISHED", "EXPANDED"]) {
+            var lut =
+                {
+                    "COLLAPSED": "Collapse",
+                    "SQUISHED": "Squish",
+                    "EXPANDED": "Expand"
+                };
+
+            menuItems.push(
+                {
+                    object: $(createCheckbox(lut[displayMode], displayMode === this.displayMode)),
+                    click: () => {
+                        this.displayMode = displayMode;
+                        this.trackView.checkContentHeight();
+                        this.trackView.repaintViews();
+                    }
+                });
+        }
+
+
+        return menuItems;
     }
 
     /**
-     * Default popup text function -- just extracts string and number properties in random order.
-     * @param call
-     * @param variant
-     * @returns {Array}
+     * Create a "color by" checkbox menu item, optionally initially checked
+     * @param menuItem
+     * @param showCheck
+     * @returns {{init: undefined, name: undefined, click: clickHandler, object: (jQuery|HTMLElement|jQuery.fn.init)}}
      */
-    function extractPopupData(call, variant) {
+    colorByCB(menuItem, showCheck) {
 
-        var gt = '', popupData;
-        call.genotype.forEach(function (i) {
-            if (i === 0) {
-                gt += variant.referenceBases;
+        const $e = $(createCheckbox(menuItem.label, showCheck));
+        const clickHandler = () => {
+
+            if (menuItem.key === this.colorBy) {
+                this.colorBy = undefined;
+                delete this.config.colorBy;
+                this.trackView.repaintViews();
+            } else {
+                this.colorBy = menuItem.key;
+                this.config.colorBy = menuItem.key;
+                this.trackView.repaintViews();
             }
-            else {
-                gt += variant.alternateBases[i - 1];
-            }
-        })
 
-        popupData = [];
+        };
 
-        if (call.callSetName !== undefined) {
-            popupData.push({name: 'Name', value: call.callSetName});
-        }
-        popupData.push({name: 'Genotype', value: gt});
-        if (call.phaseset !== undefined) {
-            popupData.push({name: 'Phase set', value: call.phaseset});
-        }
-        if (call.genotypeLikelihood !== undefined) {
-            popupData.push({name: 'genotypeLikelihood', value: call.genotypeLikelihood.toString()});
-        }
-
-
-        Object.keys(call.info).forEach(function (key) {
-            popupData.push({name: key, value: call.info[key]});
-        });
-
-        return popupData;
+        return {name: undefined, object: $e, click: clickHandler, init: undefined}
     }
 
-    igv.VariantTrack.prototype.menuItemList = function (popover) {
+    getState() {
 
-        var self = this,
-            menuItems = [],
-            mapped;
+        const config = super.getState();
+        if (this._color && typeof this._color !== "function") {
+            config.color = this._color;
+        }
+        return config;
 
-        menuItems.push(igv.colorPickerMenuItem(popover, this.trackView));
+    }
 
-        mapped = _.map(["COLLAPSED", "SQUISHED", "EXPANDED"], function(displayMode, index) {
-            return {
-                object: $(markupStringified(displayMode, index, self.displayMode)),
-                click: function () {
-                    popover.hide();
-                    self.displayMode = displayMode;
-                    self.trackView.update();
-                }
-            };
-        });
+    getVariantColorTable(key) {
 
-        menuItems = menuItems.concat(mapped);
-
-        function markupStringified(displayMode, index, selfDisplayMode) {
-
-            var lut,
-                chosen;
-
-            lut =
-            {
-                "COLLAPSED": "Collapse",
-                "SQUISHED": "Squish",
-                "EXPANDED": "Expand"
-            };
-
-            chosen = (0 === index) ? '<div class="igv-track-menu-border-top">' : '<div>';
-            if (displayMode === selfDisplayMode) {
-                return chosen + '<i class="fa fa-check fa-check-shim"></i>' + lut[ displayMode ] + '</div>'
-            } else {
-                return chosen + '<i class="fa fa-check fa-check-shim fa-check-hidden"></i>' + lut[ displayMode ] + '</div>';
-            }
-
+        if (!this.colorTables) {
+            this.colorTables = new Map();
         }
 
-        return menuItems;
-
-    };
-
-    //      igv.VariantTrack.prototype.menuItemList = function (popover) {
-    //
-    //     var myself = this,
-    //         menuItems = [],
-    //         lut = {"COLLAPSED": "Collapse", "SQUISHED": "Squish", "EXPANDED": "Expand"},
-    //         checkMark = '<i class="fa fa-check fa-check-shim"></i>',
-    //         checkMarkNone = '<i class="fa fa-check fa-check-shim fa-check-hidden"></i>',
-    //         trackMenuItem = '<div class=\"igv-track-menu-item\">',
-    //         trackMenuItemFirst = '<div class=\"igv-track-menu-item igv-track-menu-border-top\">';
-    //
-    //     menuItems.push(igv.colorPickerMenuItem(popover, this.trackView));
-    //
-    //     ["COLLAPSED", "SQUISHED", "EXPANDED"].forEach(function (displayMode, index) {
-    //
-    //         var chosen,
-    //             str;
-    //
-    //         chosen = (0 === index) ? trackMenuItemFirst : trackMenuItem;
-    //         str = (displayMode === myself.displayMode) ? chosen + checkMark + lut[displayMode] + '</div>' : chosen + checkMarkNone + lut[displayMode] + '</div>';
-    //
-    //         menuItems.push({
-    //             object: $(str),
-    //             click: function () {
-    //                 popover.hide();
-    //                 myself.displayMode = displayMode;
-    //                 myself.trackView.update();
-    //             }
-    //         });
-    //
-    //     });
-    //
-    //     return menuItems;
-    //
-    // };
+        if (!this.colorTables.has(key)) {
+            let tbl;
+            switch (key) {
+                case "SVTYPE" :
+                    tbl = SV_COLOR_TABLE;
+                    break;
+                default:
+                    tbl = new PaletteColorTable("Set3");
+            }
+            this.colorTables.set(key, tbl);
+        }
+        return this.colorTables.get(key);
+    }
+}
 
 
-    return igv;
-
+const SV_COLOR_TABLE = new ColorTable({
+    'DEL': '#ff2101',
+    'INS': '#001888',
+    'DUP': '#028401',
+    'INV': '#008688',
+    'CNV': '#8931ff',
+    'BND': '#891100',
+    '*': '#002eff'
 })
-(igv || {});
+
+
+export default VariantTrack

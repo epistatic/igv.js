@@ -2,92 +2,63 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-    <meta name="description" content="">
-    <meta name="author" content="">
-    <link rel="shortcut icon" href="//igv.org/web/img/favicon.ico">
+    <meta content="Jim Robinson" name="author">
+    <link href=img/favicon.ico rel="shortcut icon">
+    <title>igv.js</title>
 
-    <title>IGV - Integrative Genomics Viewer</title>
-
-    <!-- Shims for legacy browsers -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/es5-shim/4.5.7/es5-shim.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/es6-shim/0.35.3/es6-shim.js"></script>
-
-    <!-- jQuery UI CSS -->
-    <link rel="stylesheet" type="text/css"
-          href="https://ajax.googleapis.com/ajax/libs/jqueryui/1.11.2/themes/smoothness/jquery-ui.css"/>
-
-    <!-- Font Awesome CSS -->
-    <link rel="stylesheet" type="text/css" href="https://maxcdn.bootstrapcdn.com/font-awesome/4.2.0/css/font-awesome.min.css">
-
-    <!-- IGV CSS -->
-    <link rel="stylesheet" type="text/css" href="https://igv.org/web/beta/igv.css">
-
-    <!-- jQuery JS -->
-    <script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
-    <script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jqueryui/1.11.2/jquery-ui.min.js"></script>
-
-    <!-- Underscore JS -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/underscore.js/1.8.3/underscore-min.js"></script>
-
-    <!-- IGV JS-->
-    <script type="text/javascript" src="https://igv.org/web/beta/igv-beta.min.js"></script>
-
-    <script>
-        (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
-                    (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
-                m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
-        })(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
-
-        ga('create', 'UA-92237317-1', 'auto');
-        ga('send', 'pageview');
-
-    </script>
+    <!-- IGV JS -->
+    <script src="../dist/igv.min.js"></script>
 
 </head>
 
 <body>
 
-<p>
+<h1>Segmented Copy Number</h1>
 
-<h1>Embedded copy number browser</h1></p>
-
-<div id="igvDiv" style="padding-top: 10px;padding-bottom: 10px; border:1px solid lightgray"></div>
+<div id="igv-div" style="padding-top: 10px;padding-bottom: 10px; border:1px solid lightgray"></div>
 
 <script type="text/javascript">
 
-    $(document).ready(function () {
+    document.addEventListener("DOMContentLoaded", function () {
 
-        var div = $("#igvDiv")[0],
-                options = {
-                    showNavigation: true,
-                    showRuler: true,
-                    genome: "hg19",
-                    locus: "egfr",
-                    tracks: [
-                        {
-                            url: 'https://data.broadinstitute.org/igvdata/test/igv-web/segmented_data_080520.seg.gz',
-                            indexed: false,
-                            name: 'Segmented CN'
-                        },
-                        {
-                            name: "Genes",
-                            type: "annotation",
-                            format: "bed",
-                            sourceType: "file",
-                            url: "https://s3.amazonaws.com/igv.broadinstitute.org/annotations/hg19/genes/refGene.hg19.bed.gz",
-                            indexURL: "https://s3.amazonaws.com/igv.broadinstitute.org/annotations/hg19/genes/refGene.hg19.bed.gz.tbi",
-                            order: Number.MAX_VALUE,
-                            visibilityWindow: 300000000,
-                            displayMode: "EXPANDED"
-                        }
-                    ]
-                };
+        const version = igv.version();
+        console.log("Using IGV version: " + version);
 
-        igv.createBrowser(div, options);
+        const igvDiv = document.getElementById("igv-div");
+        const options =
+            {
+                genome: "hg19",
+                tracks: [
+                    {
+                        name: "Segmented Copy Number",
+                        type: "seg",
+                        format: "seg",
+                        url: "https://s3.amazonaws.com/igv.org.demo/GBM-TP.seg.gz"
+                    },
+                    {
+                        name: "Indexed",
+                        type: "seg",
+                        format: "seg",
+                        url: "https://s3.amazonaws.com/igv.org.demo/GBM-TP.seg.gz",
+                        indexURL: "https://s3.amazonaws.com/igv.org.demo/GBM-TP.seg.gz.tbi"
+                    },
+                    {
+                        name: "Indexed with visibility window",
+                        type: "seg",
+                        format: "seg",
+                        url: "https://s3.amazonaws.com/igv.org.demo/GBM-TP.seg.gz",
+                        indexURL: "https://s3.amazonaws.com/igv.org.demo/GBM-TP.seg.gz.tbi",
+                        visibilityWindow: "100000000"
+                    },
+                ]
+            };
 
-    });
+
+        igv.createBrowser(igvDiv, options)
+            .then(function (browser) {
+                console.log("Created IGV browser");
+            })
+    })
 
 </script>
 

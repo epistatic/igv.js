@@ -23,6 +23,9 @@
  * THE SOFTWARE.
  */
 
+import {StringUtils} from "../../node_modules/igv-utils/src/index.js";
+
+
 /**
  *  Define parser for seg files  (.bed, .gff, .vcf, etc).  A parser should implement 2 methods
  *
@@ -33,78 +36,144 @@
  */
 
 
-var igv = (function (igv) {
+class SegParser {
 
-    var maxFeatureCount = Number.MAX_VALUE,    // For future use,  controls downsampling
-        sampleColumn = 0,
-        chrColumn = 1,
-        startColumn = 2,
-        endColumn = 3;
+    constructor(type) {
+        this.type = type || 'seg';   // One of seg, mut, or maf
 
+        switch (this.type) {
+            case 'mut':
+                this.sampleColumn = 3;
+                this.chrColumn = 0;
+                this.startColumn = 1;
+                this.endColumn = 2;
+                this.dataColumn = 4;
+                break;
+            case 'maf':
+                this.sampleColumn = 15;
+                this.chrColumn = 4;
+                this.startColumn = 5;
+                this.endColumn = 6;
+                this.dataColumn = 8;
+                break;
+            default:
+                this.sampleColumn = 0;
+                this.chrColumn = 1;
+                this.startColumn = 2;
+                this.endColumn = 3;
+            // Data column determined after reading header
+        }
+    }
 
-    igv.SegParser = function () {
-   }
-
-    igv.SegParser.prototype.parseHeader = function (data) {
-
-        var lines = data.splitLines(),
-            len = lines.length,
-            line,
-            i,
-            tokens;
-
-        for (i = 0; i < len; i++) {
-            line = lines[i];
+    async parseHeader(dataWrapper) {
+        let line;
+        while ((line = await dataWrapper.nextLine()) !== undefined) {
             if (line.startsWith("#")) {
-                continue;
-            }
-            else {
-                tokens = line.split("\t");
-                this.header = {headings: tokens, lineCount: i + 1};
-                return this.header;
+                // skip
+            } else {
+                const tokens = line.split("\t");
+                this.header = {headings: tokens};
                 break;
             }
         }
-
         return this.header;
     }
 
+    async parseFeatures(dataWrapper) {
 
-    igv.SegParser.prototype.parseFeatures = function (data) {
-
-        var lines = data ? data.splitLines() : [] ,
-            len = lines.length,
-            tokens, allFeatures = [], line, i, dataColumn;
-
+        const allFeatures = [];
+        let extraHeaders;
         if (!this.header) {
-            this.header = this.parseHeader(data);
+            this.header = await this.parseHeader(dataWrapper);  // This will only work for non-indexed files
         }
-        dataColumn = this.header.headings.length - 1;
+        if ('seg' === this.type) {
+            this.dataColumn = this.header.headings.length - 1;
+        }
+        if (this.header.headings.length > 5) {
+            extraHeaders = this.extractExtraColumns(this.header.headings);
+        }
+        const valueColumnName = this.header.headings[this.dataColumn];
 
-
-        for (i = this.header.lineCount; i < len; i++) {
-
-            line = lines[i];
-
-            tokens = lines[i].split("\t");
-
-            if (tokens.length > dataColumn) {
-
-                allFeatures.push({
-                    sample: tokens[sampleColumn],
-                    chr: tokens[chrColumn],
-                    start: parseInt(tokens[startColumn]),
-                    end: parseInt(tokens[endColumn]),
-                    value: parseFloat(tokens[dataColumn])
-                });
+        let line;
+        while ((line = await dataWrapper.nextLine()) !== undefined) {
+            const tokens = line.split("\t");
+            const value = ('seg' === this.type) ? parseFloat(tokens[this.dataColumn]) : tokens[this.dataColumn];
+            if (tokens.length > this.dataColumn) {
+                const feature = new SegFeature({
+                    sample: tokens[this.sampleColumn],
+                    chr: tokens[this.chrColumn],
+                    start: parseInt(tokens[this.startColumn]) - 1,
+                    end: parseInt(tokens[this.endColumn]),
+                    value,
+                    valueColumnName
+                })
+                if (extraHeaders) {
+                    const extraValues = this.extractExtraColumns(tokens);
+                    feature.setAttributes({names: extraHeaders, values: extraValues});
+                }
+                allFeatures.push(feature);
             }
         }
-
         return allFeatures;
-
     }
 
+    extractExtraColumns(tokens) {
+        const extras = []
+        for (let i = 0; i < tokens.length; i++) {
+            if (i !== this.chrColumn && i !== this.startColumn && i !== this.endColumn) {
+                extras.push(tokens[i]);
+            }
+        }
+        return extras;
+    }
 
-    return igv;
-})
-(igv || {});
+}
+
+class SegFeature {
+
+    constructor({sample, chr, start, end, value, valueColumnName}) {
+        this.sample = sample;
+        this.chr = chr;
+        this.start = start;
+        this.end = end;
+        this.value = value;
+        this.valueColumnName = valueColumnName;
+    }
+
+    setAttributes({names, values}) {
+        this.attributeNames = names;
+        this.attributeValues = values;
+    }
+
+    getAttribute(name) {
+        if (this.attributeNames) {
+            const idx = this.attributeNames.indexOf(name);
+            if (idx >= 0) {
+                return this.attributeValues[idx];
+            }
+        }
+        return undefined;
+    }
+
+    popupData() {
+
+        const locationString = (this.chr + ":" +
+            StringUtils.numberFormatter(this.start + 1) + "-" +
+            StringUtils.numberFormatter(this.end));
+        const pd = [
+            {name: "Sample", value: this.sample},
+            {name: "Location", value: locationString},
+            {name: (this.valueColumnName ? this.valueColumnName : "Value"), value: this.value}
+        ];
+        if (this.attributeNames && this.attributeNames.length > 0) {
+            pd.push('<hr/>')
+            for (let i = 0; i < this.attributeNames.length; i++) {
+                pd.push({name: this.attributeNames[i], value: this.attributeValues[i]});
+            }
+            pd.push('<hr/>');  // In case there are multiple features selected
+        }
+        return pd;
+    }
+}
+
+export default SegParser;

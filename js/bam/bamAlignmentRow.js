@@ -23,215 +23,156 @@
  * THE SOFTWARE.
  */
 
-/**
- * Created by turner on 2/10/15.
- */
-var igv = (function (igv) {
+import {StringUtils} from "../../node_modules/igv-utils/src/index.js";
 
-    igv.BamAlignmentRow = function () {
+const isString = StringUtils.isString;
+const hashCode = StringUtils.hashCode;
+
+class BamAlignmentRow {
+
+    constructor() {
 
         this.alignments = [];
         this.score = undefined;
-    };
+    }
 
-    igv.BamAlignmentRow.prototype.findCenterAlignment = function (bpStart, bpEnd) {
+    findAlignment(genomicLocation) {
 
-        var centerAlignment = undefined;
+        const alignmentContains = (a, genomicLocation) => {
+            return genomicLocation >= a.start && genomicLocation < a.start + a.lengthOnRef;
+        }
 
         // find single alignment that overlaps sort location
-        this.alignments.forEach(function(a){
-
-            if (undefined === centerAlignment) {
-
-                if ((a.start + a.lengthOnRef) < bpStart || a.start > bpEnd) {
-                    // do nothing
+        let centerAlignment;
+        for (let i = 0; i < this.alignments.length; i++) {
+            const a = this.alignments[i];
+            if (genomicLocation >= a.start && genomicLocation < a.start + a.lengthOnRef) {
+                if (a.paired) {
+                    if (a.firstAlignment && alignmentContains(a.firstAlignment, genomicLocation)) {
+                        centerAlignment = a.firstAlignment;
+                    } else if (a.secondAlignment && alignmentContains(a.secondAlignment, genomicLocation)) {
+                        centerAlignment = a.secondAlignment;
+                    }
                 } else {
                     centerAlignment = a;
                 }
-
+                break;
             }
-
-        });
+        }
 
         return centerAlignment;
-    };
 
-    igv.BamAlignmentRow.prototype.updateScore = function (genomicLocation, genomicInterval, sortOption) {
+    }
 
-        this.score = this.calculateScore(genomicLocation, (1 + genomicLocation), genomicInterval, sortOption);
+    updateScore(options, alignmentContainer) {
+        this.score = this.calculateScore(options, alignmentContainer);
+    }
 
-    };
+    calculateScore({position, option, direction, tag}, alignmentContainer) {
 
-    igv.BamAlignmentRow.prototype.calculateScore = function (bpStart, bpEnd, interval, sortOption) {
+        if (!option) option = "BASE";
 
-        var baseScore,
-            baseScoreFirst,
-            baseScoreSecond,
-            alignment,
-            blockFirst,
-            blockSecond,
-            block;
-
-        alignment = this.findCenterAlignment(bpStart, bpEnd);
+        const alignment = this.findAlignment(position);
         if (undefined === alignment) {
-            return Number.MAX_VALUE;
+            return Number.MAX_VALUE * (direction ? 1 : -1);
         }
 
-        baseScoreFirst = baseScoreSecond = undefined;
+        let mate;
+        switch (option) {
+            case "NUCLEOTIDE":
+            case "BASE": {
+                return calculateBaseScore(alignment, alignmentContainer, position);
+            }
+            case "STRAND":
+                return alignment.strand ? 1 : -1;
+            case "START":
+                return alignment.start;
+            case "TAG": {
 
-        if ("NUCLEOTIDE" === sortOption.sort) {
-
-            if (alignment.blocks && alignment.blocks.length > 0) {
-                blockFirst = blockAtGenomicLocation(alignment.blocks, bpStart, interval.start);
-                if (blockFirst) {
-                    baseScoreFirst = blockScoreWithObject(blockFirst, interval);
+                const tagValue = alignment.tags()[tag];
+                if (tagValue !== undefined) {
+                    return isString(tagValue) ? hashCode(tagValue) : tagValue;
+                } else {
+                    return Number.MAX_VALUE;
                 }
-                // baseScoreFirst = nucleotideBlockScores(alignment.blocks);
             }
-
-            if (alignment.firstAlignment && alignment.firstAlignment.blocks && alignment.firstAlignment.blocks.length > 0) {
-                blockFirst = blockAtGenomicLocation(alignment.firstAlignment.blocks, bpStart, interval.start);
-                if (blockFirst) {
-                    baseScoreFirst = blockScoreWithObject(blockFirst, interval);
-                }
-                // baseScoreFirst = nucleotideBlockScores(alignment.firstAlignment.blocks);
-            }
-
-            if (alignment.secondAlignment && alignment.secondAlignment.blocks && alignment.secondAlignment.blocks.length > 0) {
-                blockSecond = blockAtGenomicLocation(alignment.secondAlignment.blocks, bpStart, interval.start);
-                if (blockSecond) {
-                    baseScoreSecond = blockScoreWithObject(blockSecond, interval);
-                }
-                // baseScoreSecond = nucleotideBlockScores(alignment.secondAlignment.blocks);
-            }
-
-            baseScore = (undefined === baseScoreFirst) ? baseScoreSecond : baseScoreFirst;
-
-            return (undefined === baseScore) ? Number.MAX_VALUE : baseScore;
-        } else if ("STRAND" === sortOption.sort) {
-
-            return alignment.strand ? 1 : -1;
-        } else if ("START" === sortOption.sort) {
-
-            return alignment.start;
-        }
-
-        return Number.MAX_VALUE;
-
-        function blockAtGenomicLocation(blocks, genomicLocation, genomicIntervalStart) {
-
-            var result = undefined;
-
-            blocks.forEach(function (block) {
-
-                for (var i = 0, genomicOffset = block.start - genomicIntervalStart, blockLocation = block.start, blockSequenceLength = block.seq.length;
-                     i < blockSequenceLength;
-                     i++, genomicOffset++, blockLocation++) {
-
-                    if (genomicLocation === blockLocation) {
-                        result = { block: block, blockSeqIndex: i, referenceSequenceIndex: genomicOffset, location: genomicLocation };
-                    }
-
-                }
-
-            });
-
-            return result;
-        }
-
-        function blockScoreWithObject(obj, interval) {
-
-            var reference,
-                base,
-                coverage,
-                count,
-                phred;
-
-            if ("*" === obj.block.seq) {
-                return 3;
-            }
-
-            reference = interval.sequence.charAt(obj.referenceSequenceIndex);
-            base = obj.block.seq.charAt(obj.blockSeqIndex);
-
-            if ("=" === base) {
-                base = reference;
-            }
-
-            if ('N' === base) {
-                return 2;
-            } else if (reference === base) {
-                return 3;
-            } else if ("X" === base|| reference !== base) {
-
-                coverage = interval.coverageMap.coverage[ (obj.location - interval.coverageMap.bpStart) ];
-
-                count = coverage[ "pos" + base ] + coverage[ "neg" + base ];
-                phred = (coverage.qual) ? coverage.qual : 0;
-
-                return -(count + (phred / 1000.0));
-            }
-
-            return undefined;
-        }
-
-        function nucleotideBlockScores(blocks) {
-
-            var result = undefined;
-
-            blocks.forEach(function (block) {
-
-                var sequence = interval.sequence,
-                    coverageMap = interval.coverageMap,
-                    reference,
-                    base,
-                    coverage,
-                    count,
-                    phred;
-
-                if ("*" === block.seq) {
-                    result = 3;
-                }
-
-                for (var i = 0, indexReferenceSequence = block.start - interval.start, bpBlockSequence = block.start, lengthBlockSequence = block.seq.length;
-                     i < lengthBlockSequence;
-                     i++, indexReferenceSequence++, bpBlockSequence++) {
-
-                    if (bpStart !== bpBlockSequence) {
-                        continue;
-                    }
-
-                    reference = sequence.charAt(indexReferenceSequence);
-                    base = block.seq.charAt(i);
-
-                    if (base === "=") {
-                        base = reference;
-                    }
-
-                    if (base === 'N') {
-                        result = 2;
-                    }
-                    else if (base === reference) {
-                        result = 3;
-                    }
-                    else if (base === "X" || base !== reference){
-
-                        coverage = coverageMap.coverage[ (bpBlockSequence - coverageMap.bpStart) ];
-                        count = coverage[ "pos" + base ] + coverage[ "neg" + base ];
-                        phred = (coverage.qual) ? coverage.qual : 0;
-                        result = -(count + (phred / 1000.0));
+            case "READ_NAME":
+                return hashCode(alignment.readName);
+            case "INSERT_SIZE":
+                return -Math.abs(alignment.fragmentLength);
+            case "GAP_SIZE":
+                return -alignment.gapSizeAt(position);
+            case "MATE_CHR":
+                mate = alignment.mate;
+                if (!mate) {
+                    return Number.MAX_VALUE;
+                } else {
+                    if (mate.chr === alignment.chr) {
+                        return Number.MAX_VALUE - 1;
                     } else {
-                        console.log("BamAlignmentRow.caculateScore - huh?");
+                        return hashCode(mate.chr);
                     }
-
-                } // for (i < lengthBlockSequence)
-
-            });
-
-            return result;
+                }
+            case "MQ":
+                return alignment.mq === undefined ? Number.MAX_VALUE : -alignment.mq;
+            default:
+                return Number.MAX_VALUE;
         }
-    };
 
-    return igv;
 
-})(igv || {});
+        function calculateBaseScore(alignment, alignmentContainer, genomicLocation) {
+
+            let reference;
+            const idx = Math.floor(genomicLocation) - alignmentContainer.start;
+            if (idx < alignmentContainer.sequence.length) {
+                reference = alignmentContainer.sequence.charAt(idx);
+            }
+            if (!reference) {
+                return 0;
+            }
+            const base = alignment.readBaseAt(genomicLocation);
+            const quality = alignment.readBaseQualityAt(genomicLocation);
+
+            const coverageMap = alignmentContainer.coverageMap;
+            const coverageMapIndex = Math.floor(genomicLocation - coverageMap.bpStart);
+            const coverage = coverageMap.coverage[coverageMapIndex];
+
+            // Insertions.  These are additive with base scores as they occur between bases, so you can have a
+            // base mismatch AND an insertion
+            let baseScore = 0;
+            if (alignment.insertions) {
+                for(let ins of alignment.insertions) {
+                    if(ins.start === genomicLocation) {
+                        baseScore = -coverage.ins;
+                    }
+                }
+            }
+
+
+            if (!base) {
+                // Either deletion or skipped (splice junction)
+                const delCount = coverage.del;
+                if (delCount > 0) {
+                    baseScore -= delCount;
+                } else if (baseScore === 0) {    // Don't modify insertion score, if any
+                    baseScore = 1;
+                }
+            } else {
+                reference = reference.toUpperCase();
+                if ('N' === base && baseScore === 0) {
+                    baseScore = 2;
+                } else if ((reference === base || '=' === base) && baseScore === 0) {
+                    baseScore = 4 - quality / 1000;
+                } else if ("X" === base || reference !== base) {
+                    const count = coverage["pos" + base] + coverage["neg" + base];
+                    baseScore -= (count + (quality / 1000));
+                }
+            }
+
+
+            return baseScore;
+        }
+    }
+}
+
+export default BamAlignmentRow;

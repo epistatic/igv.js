@@ -23,43 +23,35 @@
  * THE SOFTWARE.
  */
 
-var igv = (function (igv) {
+import { DOMUtils } from '../node_modules/igv-utils/src/index.js'
+import { prettyBasePairNumber } from './util/igvUtils.js'
 
-    igv.WindowSizePanel = function ($parent) {
+class WindowSizePanel {
+    constructor(parent, browser) {
 
-        this.$content = $('<div class="igv-windowsizepanel-content-div">');
-        $parent.append(this.$content);
+        this.container = DOMUtils.div({ class: 'igv-windowsize-panel-container' });
+        parent.appendChild(this.container)
 
-    };
+        browser.on('locuschange', (referenceFrameList) => {
+            this.updatePanel(referenceFrameList)
+        })
 
-    igv.WindowSizePanel.prototype.show = function () {
-        this.$content.show();
-    };
+        this.browser = browser;
 
-    igv.WindowSizePanel.prototype.hide = function () {
-        this.$content.hide();
-    };
+    }
 
-    igv.WindowSizePanel.prototype.updateWithGenomicState = function (genomicState) {
+    show() {
+        this.container.style.display = 'block'
+    }
 
-        var viewportWidth,
-            referenceFrame,
-            length;
+    hide() {
+        this.container.style.display = 'none'
+    }
 
-        if (1 === genomicState.locusCount && 'all' !== genomicState.locusSearchString) {
-            this.show();
-        } else {
-            this.hide();
-        }
+    updatePanel(referenceFrameList) {
+        const width = this.browser.calculateViewportWidth(this.browser.referenceFrameList.length)
+        this.container.innerText = 1 === referenceFrameList.length ? prettyBasePairNumber(Math.round(width * referenceFrameList[ 0 ].bpPerPixel)) : ''
+    }
+}
 
-        viewportWidth = igv.Viewport.viewportWidthAtLocusIndex(genomicState.locusIndex);
-        referenceFrame = genomicState.referenceFrame;
-
-        length = viewportWidth * referenceFrame.bpPerPixel;
-
-        this.$content.text( igv.prettyBasePairNumber(Math.round(length)) );
-    };
-
-    return igv;
-})
-(igv || {});
+export default WindowSizePanel;
