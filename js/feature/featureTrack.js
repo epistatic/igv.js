@@ -228,7 +228,8 @@ class FeatureTrack extends TrackBase {
             for (let feature of featureList) {
                 if (feature.end < bpStart) continue;
                 // Do not plot junctions that span the viewed region.
-                if (feature.start < bpStart && feature.end > bpEnd) continue;
+                if (this.config.type == 'spliceJunctions' && feature.start < bpStart && feature.end > bpEnd ) continue;
+                // if (feature.start < bpStart && feature.end > bpEnd) continue;
                 if (feature.start > bpEnd) break;
 
                 const row = this.displayMode === 'COLLAPSED' ? 0 : feature.row;
