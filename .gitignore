@@ -1,3 +1,4 @@
+package-lock.json
 .DS_Store
 /.vscode/
 /es5/
@@ -21,3 +22,5 @@ igv.css.map
 /package-lock.json
 /deploy-release.sh
 /deploy/
+/config_demo.json
+/dev/oauth/oauthConfigPrivate.js

@@ -35,6 +35,7 @@ import Ga4ghVariantReader from "../ga4gh/ga4ghVariantReader.js";
 import CivicReader from "../civic/civicReader.js";
 import GenomicInterval from "../genome/genomicInterval.js";
 import pack from "../feature/featurePacker.js";
+import HtsgetVariantReader from "../htsget/htsgetVariantReader.js";
 
 
 /**
@@ -75,7 +76,9 @@ class TextFeatureSource {
             this.reader = new GtexReader(config);
             this.queryable = true;
             this.expandQuery = config.expandQuery ? true : false;
-        } else if (config.sourceType === 'ucscservice') {
+        } else if ("htsget" === config.sourceType) {
+            this.reader = new HtsgetVariantReader(config, genome);
+        }else if (config.sourceType === 'ucscservice') {
             this.reader = new UCSCServiceReader(config.source);
             this.queryable = true;
         } else if (config.sourceType === 'custom' || config.source !== undefined) {    // Second test for backward compatibility
@@ -313,7 +316,7 @@ function packFeatures(features, maxRows) {
  */
 function fixFeatures(features, genome) {
 
-    if (!features || features.length === 0) return;
+    if (!features || features.length === 0) return [];
 
     const isBedPE = features[0].chr === undefined && features[0].chr1 !== undefined;
     if (isBedPE) {

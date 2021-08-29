@@ -1,5 +1,32 @@
 import {igvxhr, StringUtils} from "../node_modules/igv-utils/src/index.js"
 
+
+const DEFAULT_SEARCH_CONFIG = {
+    timeout: 5000,
+    type: "plain",   // Legacy plain text support -- deprecated
+    url: 'https://igv.org/genomes/locus.php?genome=$GENOME$&name=$FEATURE$',
+    coords: 0,
+    chromosomeField: "chromosome",
+    startField: "start",
+    endField: "end",
+    geneField: "gene",
+    snpField: "snp"
+}
+
+/**
+ * Return an object representing the locus of the given string.  Object is of the form
+ * {
+ *   chr,
+ *   start,
+ *   end,
+ *   locusSearchString,
+ *   gene,
+ *   snp
+ * }
+ * @param browser
+ * @param string
+ * @returns {Promise<*>}
+ */
 async function search(browser, string) {
 
     if (undefined === string || '' === string.trim()) {
@@ -12,18 +39,32 @@ async function search(browser, string) {
 
     const loci = string.split(' ')
 
-    let searchConfig = browser.searchConfig;
+    let searchConfig = browser.searchConfig || DEFAULT_SEARCH_CONFIG;
     let list = [];
 
     const searchLocus = async (locus) => {
         let locusObject = parseLocusString(browser, locus)
 
         if (!locusObject) {
-            locusObject = browser.genome.featureDB[locus.toUpperCase()]
+            const feature = browser.genome.featureDB[locus.toUpperCase()];
+            if(feature) {
+                locusObject = {
+                    chr: feature.chr,
+                    start: feature.start,
+                    end: feature.end,
+                    gene: feature.name,
+                    locusSearchString: string
+                }
+            }
         }
 
         if (!locusObject && (browser.config && false !== browser.config.search)) {
-            locusObject = await searchWebService(browser, locus, searchConfig)
+            try {
+                locusObject = await searchWebService(browser, locus, searchConfig)
+            } catch (error) {
+                console.error(error);
+                throw Error("Search service currently unavailable.");
+            }
         }
         return locusObject
     }
@@ -111,10 +152,11 @@ async function searchWebService(browser, locus, searchConfig) {
     if (path.indexOf("$GENOME$") > -1) {
         path = path.replace("$GENOME$", (browser.genome.id ? browser.genome.id : "hg19"));
     }
-    const result = await igvxhr.loadString(path);
+    const options = searchConfig.timeout ? {timeout: searchConfig.timeout} : undefined;
+    const result = await igvxhr.loadString(path, options);
 
     const locusObject = processSearchResult(browser, result, searchConfig);
-    if(locusObject) {
+    if (locusObject) {
         locusObject.locusSearchString = locus;
     }
     return locusObject;
@@ -240,6 +282,7 @@ function parseSearchResults(browser, data) {
     return results;
 
 }
+
 
 // Export some functions for unit testing
 export {parseLocusString, searchWebService}

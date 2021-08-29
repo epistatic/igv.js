@@ -23,7 +23,7 @@
  * THE SOFTWARE.
  */
 
-import {FileUtils, TrackUtils, StringUtils, GoogleAuth, GoogleDrive} from "../../node_modules/igv-utils/src/index.js";
+import {FileUtils, StringUtils, GoogleAuth, GoogleDrive} from "../../node_modules/igv-utils/src/index.js";
 
 const extend = function (parent, child) {
 
@@ -153,90 +153,6 @@ const isNumber = function (num) {
     return false;
 };
 
-function inferTrackType(config) {
-
-    translateDeprecatedTypes(config);
-
-    if (config.type) {
-        return config.type;
-    }
-
-    let format;
-    if ("file" === config.sourceType || (undefined === config.sourceType && config.url)) {
-        if (undefined === config.format) {
-            const path = FileUtils.isFilePath(config.url) ? config.url.name : config.url;
-            format = TrackUtils.inferFileFormat(path);
-        } else {
-            format = config.format.toLowerCase();
-        }
-    }
-
-    if (format) {
-        switch (format) {
-            case "bw":
-            case "bigwig":
-            case "wig":
-            case "bedgraph":
-            case "tdf":
-               return "wig";
-            case "vcf":
-                return "variant";
-            case "seg":
-                return "seg";
-            case "mut":
-            case "maf":
-                return "mut";
-            case "bam":
-            case "cram":
-                return "alignment";
-            case "bedpe":
-            case "bedpe-loop":
-                return "interaction";
-            case "bp":
-                return "arc";
-            case "gwas":
-                return "gwas";
-            case "bed":
-            case "bigbed":
-            case "bb":
-                return "bedtype";
-            default:
-                return "annotation";
-        }
-    }
-}
-
-function translateDeprecatedTypes(config) {
-
-    if (config.featureType) {  // Translate deprecated "feature" type
-        config.type = config.type || config.featureType;
-        config.featureType = undefined;
-    }
-    if ("junctions" === config.type) {
-        config.type = "spliceJunctions"
-    } else if ("bed" === config.type) {
-        config.type = "annotation";
-        config.format = config.format || "bed";
-    } else if ("annotations" === config.type) {
-        config.type = "annotation"
-    } else if ("alignments" === config.type) {
-        config.type = "alignment"
-    } else if ("bam" === config.type) {
-        config.type = "alignment";
-        config.format = "bam"
-    } else if ("vcf" === config.type) {
-        config.type = "variant";
-        config.format = "vcf"
-    } else if ("t2d" === config.type) {
-        config.type = "gwas";
-    } else if ("FusionJuncSpan" === config.type && !config.format) {
-        config.format = "fusionjuncspan";
-    } else if ("aed" === config.type) {
-        config.type = "annotation";
-        config.format = config.format || "aed";
-    }
-}
-
 async function getFilename(url) {
     if (StringUtils.isString(url) && url.startsWith("https://drive.google.com")) {
         // This will fail if Google API key is not defined
@@ -250,5 +166,34 @@ async function getFilename(url) {
     }
 }
 
-export {extend, isSimpleType, buildOptions, validateLocusExtent, doAutoscale, isNumber, inferTrackType, getFilename}
+
+function prettyBasePairNumber  (raw) {
+
+    var denom,
+        units,
+        value,
+        floored;
+
+    if (raw > 1e7) {
+        denom = 1e6;
+        units = " mb";
+    } else if (raw > 1e4) {
+
+        denom = 1e3;
+        units = " kb";
+
+        value = raw / denom;
+        floored = Math.floor(value);
+        return StringUtils.numberFormatter(floored) + units;
+    } else {
+        return StringUtils.numberFormatter(raw) + " bp";
+    }
+
+    value = raw / denom;
+    floored = Math.floor(value);
+
+    return floored.toString() + units;
+}
+
+export {extend, isSimpleType, buildOptions, validateLocusExtent, doAutoscale, isNumber, getFilename, prettyBasePairNumber}
 

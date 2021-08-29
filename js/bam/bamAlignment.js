@@ -145,8 +145,11 @@ class BamAlignment {
                 } else if (type === 'i' || type === 'I') {
                     value = readInt(ba, p);
                     p += 4;
-                } else if (type === 'c' || type === 'C') {
-                    value = ba[p];
+                } else if (type === 'c' ) {
+                    value = readInt8(ba, p);
+                    p++;
+                } else if (type === 'C') {
+                    value = readUInt8(ba, p);
                     p++;
                 } else if (type === 's' || type === 'S') {
                     value = readShort(ba, p);
@@ -227,7 +230,7 @@ class BamAlignment {
 
         // Sample
         // Read group
-        nameValues.push("<hr>");
+        nameValues.push('<hr/>');
 
         // Add 1 to genomic location to map from 0-based computer units to user-based units
         nameValues.push({name: 'Alignment Start', value: StringUtils.numberFormatter(1 + this.start), borderTop: true});
@@ -241,7 +244,7 @@ class BamAlignment {
         nameValues.push({name: 'Failed QC', value: yesNo(this.isFailsVendorQualityCheck())});
 
         if (this.isPaired()) {
-            nameValues.push("<hr>");
+            nameValues.push('<hr/>');
             nameValues.push({name: 'First in Pair', value: !this.isSecondOfPair(), borderTop: true});
             nameValues.push({name: 'Mate is Mapped', value: yesNo(this.isMateMapped())});
             if (this.pairOrientation) {
@@ -261,7 +264,7 @@ class BamAlignment {
 
         }
 
-        nameValues.push("<hr>");
+        nameValues.push('<hr/>');
 
         const tagDict = this.tags();
         let isFirst = true;
@@ -279,7 +282,7 @@ class BamAlignment {
             }
         }
 
-        nameValues.push("<hr>");
+        nameValues.push('<hr/>');
         nameValues.push({name: 'Genomic Location: ', value: StringUtils.numberFormatter(1 + genomicLocation)});
         nameValues.push({name: 'Read Base:', value: this.readBaseAt(genomicLocation)});
         nameValues.push({name: 'Base Quality:', value: this.readBaseQualityAt(genomicLocation)});
@@ -360,12 +363,19 @@ function readShort(ba, offset) {
 }
 
 function readFloat(ba, offset) {
-
-    var dataView = new DataView(ba.buffer),
-        littleEndian = true;
-
-    return dataView.getFloat32(offset, littleEndian);
-
+    const dataView = new DataView(ba.buffer);
+    return dataView.getFloat32(offset);
 }
+
+function readInt8(ba, offset) {
+    const dataView = new DataView(ba.buffer);
+    return dataView.getInt8(offset);
+}
+
+function readUInt8(ba, offset) {
+    const dataView = new DataView(ba.buffer);
+    return dataView.getUint8(offset);
+}
+
 
 export default BamAlignment;
